@@ -16,7 +16,23 @@ npm run format:check
 ```
 
 `dist/` is required at runtime — the hooks call `node ${CLAUDE_PLUGIN_ROOT}/dist/...`.
-Rebuild after changing `src/`.
+It is gitignored and rebuilt by the `prepare` script on every `npm install`
+(that's how a marketplace install compiles itself). Rebuild after changing
+`src/`.
+
+## Releasing
+
+Version lives in **both** `.claude-plugin/plugin.json` and `package.json` and
+they must stay equal (CI's `validate:manifests` and `claude plugin tag` enforce
+it). Releases are git tags `axtar--v<version>` and are **manual** — never
+automatic:
+
+1. Bump `version` in both manifests, run `npm install` (updates the lockfile),
+   `npm test`, `npm run validate:manifests`, commit, push.
+2. Cut the release: run the **Release** GitHub Actions workflow by hand
+   (`gh workflow run release.yml`), or locally `claude plugin tag && git push --tags`.
+
+CI (`ci.yml`) runs build/test/lint/typecheck/format/validate on every push + PR.
 
 ## Non-negotiable invariants
 

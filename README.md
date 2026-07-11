@@ -137,6 +137,55 @@ npm run format          # prettier --write
   `src/hosts/`. Host specifics reach it through injected slots (`parseInput`,
   `assemble`, `outputAdapter`). See [`CLAUDE.md`](CLAUDE.md).
 
+### CI
+
+Two GitHub Actions workflows run on `main`:
+
+- **`ci.yml`** (every push + PR) — `npm ci` (which runs `prepare` → `tsc`, the
+  same build an end user's install triggers), then typecheck, lint,
+  format-check, the test suite, and `npm run validate:manifests`.
+- **`release.yml`** — see below.
+
+---
+
+## Releasing
+
+The runtime is a Claude Code plugin, versioned by the `version` field in **both**
+`.claude-plugin/plugin.json` and `package.json` — they must stay equal (the
+`claude plugin tag` command and CI both enforce it). Releases are marked with a
+git tag in the form **`axtar--v<version>`** (e.g. `axtar--v0.3.4`), the
+convention Claude Code's update machinery compares against.
+
+Releases never fire automatically — you cut one on purpose.
+
+**Via GitHub Actions (recommended).** Bump the version in both files and push,
+then trigger the **`release.yml`** workflow by hand — Actions tab → *Run
+workflow*, or `gh workflow run release.yml`. It reads the version and, if no
+`axtar--v<version>` tag exists yet, builds + tests + validates, then creates the
+tag and a GitHub Release with generated notes. If the version is unchanged it's a
+no-op (bump first).
+
+```bash
+# 1. bump "version" in .claude-plugin/plugin.json AND package.json (keep equal)
+npm install                 # refreshes package-lock version + rebuilds dist
+npm test && npm run validate:manifests
+git commit -am "release: v0.3.5" && git push origin main
+# 2. release when ready:
+gh workflow run release.yml
+# → tags axtar--v0.3.5 and publishes the release
+```
+
+**Or fully local.** The same tag can be created with the built-in command, which
+validates that `plugin.json` and the marketplace entry agree:
+
+```bash
+claude plugin tag           # creates axtar--v<version>
+git push origin axtar--v<version>
+```
+
+Users pick up a new release with `/plugin marketplace update axtar` then
+`/plugin update axtar@axtar` (restart to apply).
+
 ---
 
 ## Repository layout & branches

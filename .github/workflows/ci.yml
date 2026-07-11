@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main, other]
+  pull_request:
+    branches: [main]
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # `npm ci` runs the `prepare` script → `tsc`, which is exactly what
+      # Claude Code triggers on install. This proves the plugin builds itself
+      # the same way an end user's install does.
+      - name: Install (prepare builds dist/)
+        run: npm ci
+
+      - name: Verify prepare produced the runtime the hooks & MCP point at
+        run: |
+          test -f dist/hosts/claude-code/entrypoints/pre.js
+          test -f dist/hosts/claude-code/entrypoints/post.js
+          test -f dist/mcp/consult-server.js
+          test -f dist/cli/projects.js
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Format check
+        run: npm run format:check
+
+      - name: Test
+        run: npm test
+
+      - name: Validate plugin & marketplace manifests
+        run: npm run validate:manifests
