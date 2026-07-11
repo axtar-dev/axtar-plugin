@@ -88,7 +88,7 @@ export type RenderOptions = RenderContext;
 // `RenderedVerdict` historically constrained `exitCode` to `0 | 2` (Claude
 // Code's only meaningful exit codes per D-022/D-036). The shared
 // `HookEmission` widens `exitCode` to `number` and adds an optional
-// `stdout` (codex uses stdout for its JSON envelope). The Claude Code
+// `stdout` (a host may emit a JSON envelope on stdout). The Claude Code
 // adapter's emissions are still `{ exitCode: 0 | 2, stderr: string }` in
 // practice; the alias loses the narrow `0 | 2` literal type because the
 // runner consumes everything as `HookEmission`.

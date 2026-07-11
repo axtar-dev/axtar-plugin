@@ -135,8 +135,9 @@ describe('runner — mentor gate wiring', () => {
     expect(exitCode).toBe(2);
     expect(stderrText()).toContain('host-session-xyz');
     expect(stderrText()).toContain('consult');
-    // Claude Code path is UNCHANGED: a hard block, never the codex
-    // advisory-and-proceed. No "v1-deferred" advisory wording leaks in.
+    // Claude Code path is UNCHANGED: a hard block, never the advisory-and-
+    // proceed path taken by a host without the consult tool. No "v1-deferred"
+    // advisory wording leaks in.
     expect(stderrText()).not.toContain('v1-deferred');
     expect(stderrText()).not.toContain('NOT a mandatory gate');
     // No bypass audit attempted on a real denial.

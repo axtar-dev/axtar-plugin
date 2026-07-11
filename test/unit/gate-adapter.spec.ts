@@ -1,5 +1,5 @@
 /**
- * Mentor gate adapter envelopes (G1) — both hosts.
+ * Mentor gate adapter envelopes (G1) — Claude Code host.
  *
  * The runner renders the gate block/bypass decisions through the host-neutral
  * OutputAdapter seam (`renderMentorBlock`, `renderMentorBypass`). These tests

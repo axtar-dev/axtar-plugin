@@ -116,7 +116,7 @@ describe('decideGate — fail-open discriminant (ANY ok:false → bypass, NEVER 
   });
 });
 
-describe('consultUnavailableAdvisory — hosts without the consult tool (v1: codex)', () => {
+describe('consultUnavailableAdvisory — hosts without the bundled consult tool', () => {
   it('names the triggered rules and states the v1-deferred / advisory-not-mandatory-gate boundary', () => {
     const msg = consultUnavailableAdvisory(['AXT-ARC-1', 'AXT-DES-2']);
 

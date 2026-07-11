@@ -12,7 +12,7 @@
  *   - `render(response, context)` — the verdict-rendering path.
  *   - `renderEngineUnreachable(detail)` — the degraded path when the
  *     engine is not reachable. Each host renders this differently (Claude
- *     Code uses stderr + exit 0; codex uses its JSON envelope mechanism),
+ *     Code uses stderr + exit 0; another host might use a JSON envelope),
  *     so it lives behind the same adapter seam as `render`. D-039's
  *     interface spec named `render` only; this is the natural extension
  *     for the degraded path that `verdict.ts` already owned (as the
@@ -46,15 +46,15 @@ export interface OutputAdapter {
   /**
    * Mentor gate BLOCK (G1) — a real, server-issued denial. The agent must
    * consult before the edit can proceed. Claude Code: exit 2 + the message on
-   * stderr (the enforcement form, like a verdict block). Codex: the
-   * `permissionDecision: "deny"` envelope carrying the message as the reason.
+   * stderr (the enforcement form, like a verdict block). Another host might use
+   * a deny envelope carrying the message as the reason.
    */
   renderMentorBlock(message: string): HookEmission;
   /**
    * Mentor gate BYPASS (G1) — fail-open advisory when the gate is unreachable.
    * Allows the edit (exit 0) but surfaces a loud "proceeding WITHOUT required
-   * consultation" advisory. Claude Code: exit 0 + message on stderr. Codex:
-   * the `additionalContext` advisory envelope, exit 0.
+   * consultation" advisory. Claude Code: exit 0 + message on stderr. Another
+   * host might use an advisory envelope, exit 0.
    */
   renderMentorBypass(message: string): HookEmission;
 }

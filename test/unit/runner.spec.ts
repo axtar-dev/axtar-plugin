@@ -206,7 +206,7 @@ describe('runner — emit writes stdout when HookEmission.stdout is set', () => 
     else process.env.AXTAR_ENGINE_URL = prevBaseUrl;
   });
 
-  it('writes the adapter-returned stdout payload to process.stdout (codex envelope shape)', async () => {
+  it('writes the adapter-returned stdout payload to process.stdout (host JSON envelope shape)', async () => {
     // Engine returns a real PreToolUse block verdict, claude-code-side
     // assemble runs (file_path under tmpdir is fine for the mock —
     // engine answer is what drives output).

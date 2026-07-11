@@ -40,9 +40,9 @@ export interface RunOptions {
   outputAdapter: OutputAdapter;
   // Whether THIS host has the bundled consult tool and can therefore enforce
   // the MANDATORY Mentor consult loop (hard block → consult → clear). Claude
-  // Code bundles the consult MCP tool (`.mcp.json`) → true. Codex does NOT
-  // (Phase H bundled the MCP server for Claude Code only) → false, so an
-  // uncleared gate on codex must NOT hard-deny at a tool that doesn't exist.
+  // Code bundles the consult MCP tool (`.mcp.json`) → true. A host that does
+  // NOT bundle it → false, so an uncleared gate there must NOT hard-deny at a
+  // tool that doesn't exist.
   consultLoopAvailable: boolean;
 }
 
@@ -202,11 +202,11 @@ export async function run(stdinRaw: string, options: RunOptions): Promise<void> 
         emit(options.outputAdapter.renderMentorBlock(decision.message));
         exitWithTrace(2, 'mentor_gate_block');
       }
-      // Codex (and any host without the consult tool): the consult loop is v1-DEFERRED on
+      // A host without the consult tool: the consult loop is v1-DEFERRED on
       // this host. A hard deny would point at a consult tool that does not exist here — a
       // dead-end. Structurally this is the same as gate-unreachable: we cannot complete the
       // loop, so we emit a GOVERNANCE ADVISORY and PROCEED (exit 0), never dead-end. The
-      // mandatory codex consult loop lands in v2. (See spec v1/v2 boundary.)
+      // mandatory consult loop for such a host lands in v2. (See spec v1/v2 boundary.)
       const advisory = consultUnavailableAdvisory(decision.triggered_rule_ids);
       emit(options.outputAdapter.renderMentorBypass(advisory));
       await client

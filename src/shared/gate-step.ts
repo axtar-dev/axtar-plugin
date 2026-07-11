@@ -120,9 +120,9 @@ function bypassMessage(ctx: GateContext): string {
 }
 
 /**
- * Advisory for hosts WITHOUT the consult tool (v1: codex). The mandatory consult
- * loop is v1-deferred on these hosts; high-altitude edits get a GOVERNANCE ADVISORY,
- * not a mandatory gate. The mandatory codex loop lands in v2.
+ * Advisory for a host WITHOUT the bundled consult tool. The mandatory consult
+ * loop is v1-deferred on such a host; high-altitude edits get a GOVERNANCE ADVISORY,
+ * not a mandatory gate. The mandatory consult loop for such a host lands in v2.
  */
 export function consultUnavailableAdvisory(triggeredRuleIds: string[]): string {
   return (

@@ -14,12 +14,7 @@
  */
 
 import type { HookInput } from './hook-input.js';
-import type {
-  Altitude,
-  PreToolUseRequest,
-  RuleSummary,
-  Severity,
-} from './wire/schemas.js';
+import type { Altitude, PreToolUseRequest, RuleSummary, Severity } from './wire/schemas.js';
 
 export type AssembleOutcome =
   | { kind: 'evaluate'; request: PreToolUseRequest }

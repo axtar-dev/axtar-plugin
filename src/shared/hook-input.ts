@@ -3,17 +3,16 @@
  * stdin. Each host's `hook-input.ts` validates host-specific stdin and
  * produces a value that conforms to this interface.
  *
- * The fields are the intersection of what Claude Code and Codex hooks
- * both naturally provide (CX-1):
+ * The fields are the ones any host's hook naturally provides (CX-1):
  *   - `tool_name`     — name of the tool being invoked (e.g. "Edit",
- *                       "Write", "apply_patch", "Bash"). Cross-host.
+ *                       "Write", "Bash"). Cross-host.
  *   - `tool_input`    — opaque dict the host passes through; host
  *                       adapters narrow it per-tool with their own Zod
  *                       schemas.
  *   - `session_id`    — stable identifier the host attaches to the hook
- *                       firing. Codex's mapping to this field is
- *                       host-internal (Codex may derive from
- *                       `turn_id`/`tool_use_id`).
+ *                       firing. A host's mapping to this field is
+ *                       host-internal (it may derive from its own
+ *                       turn/tool identifiers).
  *   - `cwd`           — optional working dir the host advertises;
  *                       runner falls back to `CLAUDE_PROJECT_DIR` /
  *                       `process.cwd()` when absent.
