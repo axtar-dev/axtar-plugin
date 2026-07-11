@@ -1,18 +1,14 @@
 name: Release
 
-# Manual release. Nothing here fires automatically — you trigger it from the
-# Actions tab ("Run workflow") or with `gh workflow run release.yml`.
+# Publishes a GitHub Release when an `axtar--v*` tag is pushed. That tag is
+# created only by `npm run release:{patch,minor,major}` (via `npm version`), so
+# this NEVER fires on a normal commit — only on a deliberate release.
 #
-# It reads the version from .claude-plugin/plugin.json (which must equal
-# package.json), and if no `axtar--v<version>` tag exists yet, it builds +
-# tests + validates, then creates the tag and a GitHub Release. If the tag
-# already exists (version unchanged), it is a no-op — bump the version first.
-#
-# So a release is: bump `version` in BOTH manifests, commit, push to main,
-# then run this workflow.
+# The release procedure lives in RELEASE.md.
 
 on:
-  workflow_dispatch:
+  push:
+    tags: ['axtar--v*']
 
 permissions:
   contents: write
@@ -23,57 +19,45 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0 # need full history + tags to detect existing releases
+          fetch-depth: 0
 
       - uses: actions/setup-node@v6
         with:
           node-version: '20'
           cache: 'npm'
 
-      - name: Resolve version and tag
+      - name: Verify the tag matches the manifest version
         id: ver
         run: |
           PLUGIN_V="$(node -p "require('./.claude-plugin/plugin.json').version")"
           PKG_V="$(node -p "require('./package.json').version")"
           NAME="$(node -p "require('./.claude-plugin/plugin.json').name")"
           if [ "$PLUGIN_V" != "$PKG_V" ]; then
-            echo "::error::version mismatch — plugin.json=$PLUGIN_V package.json=$PKG_V (keep them equal)"
+            echo "::error::version mismatch — plugin.json=$PLUGIN_V package.json=$PKG_V"
+            exit 1
+          fi
+          EXPECTED="${NAME}--v${PLUGIN_V}"
+          if [ "${GITHUB_REF_NAME}" != "$EXPECTED" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match manifest version (expected $EXPECTED)"
             exit 1
           fi
           echo "version=$PLUGIN_V" >> "$GITHUB_OUTPUT"
-          echo "tag=${NAME}--v${PLUGIN_V}" >> "$GITHUB_OUTPUT"
-
-      - name: Check whether this version is already released
-        id: exists
-        run: |
-          if git rev-parse -q --verify "refs/tags/${{ steps.ver.outputs.tag }}" >/dev/null; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-            echo "::warning::Tag ${{ steps.ver.outputs.tag }} already exists — bump the version to release. Skipping."
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-          fi
+          echo "tag=$EXPECTED" >> "$GITHUB_OUTPUT"
 
       - name: Install (prepare builds dist/)
-        if: steps.exists.outputs.exists == 'false'
         run: npm ci
 
-      - name: Build + test + validate before releasing
-        if: steps.exists.outputs.exists == 'false'
+      - name: Build + test + validate before publishing
         run: |
           test -f dist/hosts/claude-code/entrypoints/pre.js
           test -f dist/mcp/consult-server.js
           npm test
           npm run validate:manifests
 
-      - name: Tag and publish the release
-        if: steps.exists.outputs.exists == 'false'
+      - name: Publish the GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          git config user.name  "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git tag -a "${{ steps.ver.outputs.tag }}" -m "axtar plugin v${{ steps.ver.outputs.version }}"
-          git push origin "${{ steps.ver.outputs.tag }}"
           gh release create "${{ steps.ver.outputs.tag }}" \
             --title "axtar v${{ steps.ver.outputs.version }}" \
             --generate-notes

@@ -22,17 +22,19 @@ It is gitignored and rebuilt by the `prepare` script on every `npm install`
 
 ## Releasing
 
-Version lives in **both** `.claude-plugin/plugin.json` and `package.json` and
-they must stay equal (CI's `validate:manifests` and `claude plugin tag` enforce
-it). Releases are git tags `axtar--v<version>` and are **manual** — never
-automatic:
+`package.json` is the single source of truth for the version; the `version` npm
+hook syncs it into `.claude-plugin/plugin.json` (never hand-edit that). Cut a
+release with one command — see **[`RELEASE.md`](RELEASE.md)** for the full
+procedure:
 
-1. Bump `version` in both manifests, run `npm install` (updates the lockfile),
-   `npm test`, `npm run validate:manifests`, commit, push.
-2. Cut the release: run the **Release** GitHub Actions workflow by hand
-   (`gh workflow run release.yml`), or locally `claude plugin tag && git push --tags`.
+```bash
+npm run release:patch    # or release:minor / release:major
+```
 
-CI (`ci.yml`) runs build/test/lint/typecheck/format/validate on every push + PR.
+That bumps + commits + tags `axtar--v<version>` + pushes; the pushed tag triggers
+`.github/workflows/release.yml` to publish the GitHub Release. Nothing releases on
+a normal commit. CI (`ci.yml`) runs build/test/lint/typecheck/format/validate on
+every push + PR.
 
 ## Non-negotiable invariants
 

@@ -18,7 +18,12 @@
     "format:check": "prettier --check src test",
     "typecheck": "tsc --noEmit",
     "validate:manifests": "node scripts/validate-manifests.mjs",
-    "clean": "rm -rf dist"
+    "clean": "rm -rf dist",
+    "preversion": "npm test",
+    "version": "node scripts/sync-version.mjs && git add .claude-plugin/plugin.json",
+    "release:patch": "npm version patch -m \"release: v%s\" && git push --follow-tags origin HEAD",
+    "release:minor": "npm version minor -m \"release: v%s\" && git push --follow-tags origin HEAD",
+    "release:major": "npm version major -m \"release: v%s\" && git push --follow-tags origin HEAD"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",
