@@ -34,8 +34,8 @@ Pushing the `axtar--v*` tag triggers the **Release** GitHub Actions workflow
 (`.github/workflows/release.yml`), which:
 
 - checks the tag matches the manifest version,
-- `npm ci` (which runs `prepare` → `tsc`, building `dist/` exactly like a user
-  install),
+- `npm ci`, then asserts the committed `dist/` is in sync with `src/` (a stale
+  build must never ship),
 - runs the test suite + `validate:manifests`,
 - publishes a **GitHub Release** for the tag with auto-generated notes.
 
@@ -94,5 +94,7 @@ git push --follow-tags origin main
   tag isn't `axtar--v<manifest version>`. Delete the stray tag
   (`git push origin :refs/tags/<tag>`) and release again with `npm run release:*`.
 - **Need to re-run a release** — delete the tag locally and on the remote, then
-  re-run. Note that `dist/` is never committed; it is rebuilt by `prepare` on every
-  install and in CI, so there is no build artifact to bump.
+  re-run. `dist/` **is** committed (the marketplace installs `main` HEAD without
+  running build scripts, so the checked-in `dist/` is what ships); the `version`
+  hook rebuilds and stages it into every release commit, so you never bump it by
+  hand.

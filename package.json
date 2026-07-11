@@ -20,7 +20,7 @@
     "validate:manifests": "node scripts/validate-manifests.mjs",
     "clean": "rm -rf dist",
     "preversion": "npm test",
-    "version": "node scripts/sync-version.mjs && git add .claude-plugin/plugin.json",
+    "version": "npm run build && node scripts/sync-version.mjs && git add dist .claude-plugin/plugin.json",
     "release:patch": "npm version patch -m \"release: v%s\" && git push --follow-tags origin HEAD",
     "release:minor": "npm version minor -m \"release: v%s\" && git push --follow-tags origin HEAD",
     "release:major": "npm version major -m \"release: v%s\" && git push --follow-tags origin HEAD"

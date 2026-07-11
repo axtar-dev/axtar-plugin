@@ -44,13 +44,22 @@ jobs:
           echo "version=$PLUGIN_V" >> "$GITHUB_OUTPUT"
           echo "tag=$EXPECTED" >> "$GITHUB_OUTPUT"
 
-      - name: Install (prepare builds dist/)
+      - name: Install (prepare rebuilds dist/)
         run: npm ci
 
-      - name: Build + test + validate before publishing
+      - name: Committed dist/ is in sync with src/ (this is what ships)
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::dist/ is out of sync with src/ — the release would ship a stale runtime"
+            git --no-pager diff --stat -- dist
+            exit 1
+          fi
+
+      - name: Verify runtime + test + validate before publishing
         run: |
           test -f dist/hosts/claude-code/entrypoints/pre.js
           test -f dist/mcp/consult-server.js
+          test -f dist/cli/projects.js
           npm test
           npm run validate:manifests
 

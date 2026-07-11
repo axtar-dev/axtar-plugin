@@ -1,0 +1,1 @@
+{"version":3,"file":"drift-advisory.js","sourceRoot":"","sources":["../../src/shared/drift-advisory.ts"],"names":[],"mappings":"AAAA;;;;;;;;;GASG;AACH,MAAM,UAAU,aAAa,CAAC,eAAwB,EAAE,OAA0B;IAChF,IAAI,CAAC,eAAe,IAAI,OAAO,CAAC,MAAM,KAAK,CAAC;QAAE,OAAO,IAAI,CAAC;IAC1D,OAAO,CACL,8EAA8E;QAC9E,WAAW,OAAO,CAAC,IAAI,CAAC,IAAI,CAAC,qDAAqD;QAClF,oFAAoF;QACpF,qBAAqB,CACtB,CAAC;AACJ,CAAC"}

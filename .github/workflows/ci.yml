@@ -17,13 +17,24 @@ jobs:
           node-version: '20'
           cache: 'npm'
 
-      # `npm ci` runs the `prepare` script → `tsc`, which is exactly what
-      # Claude Code triggers on install. This proves the plugin builds itself
-      # the same way an end user's install does.
-      - name: Install (prepare builds dist/)
+      # The marketplace installer runs `npm install` with lifecycle scripts
+      # DISABLED, so it never runs `prepare`/`tsc` — the committed dist/ is what
+      # actually ships. Here `npm ci` DOES run `prepare` (rebuilding dist/), so
+      # the next step can assert the committed dist/ matches a fresh build and
+      # guarantee the runtime on `main` (served verbatim by the marketplace) is
+      # always in sync with src/.
+      - name: Install (prepare rebuilds dist/)
         run: npm ci
 
-      - name: Verify prepare produced the runtime the hooks & MCP point at
+      - name: Committed dist/ is in sync with src/ (marketplace serves this)
+        run: |
+          if ! git diff --quiet -- dist; then
+            echo "::error::dist/ is out of sync with src/ — run 'npm run build' and commit dist/"
+            git --no-pager diff --stat -- dist
+            exit 1
+          fi
+
+      - name: Verify the runtime the hooks & MCP point at exists
         run: |
           test -f dist/hosts/claude-code/entrypoints/pre.js
           test -f dist/hosts/claude-code/entrypoints/post.js

@@ -16,9 +16,13 @@ npm run format:check
 ```
 
 `dist/` is required at runtime — the hooks call `node ${CLAUDE_PLUGIN_ROOT}/dist/...`.
-It is gitignored and rebuilt by the `prepare` script on every `npm install`
-(that's how a marketplace install compiles itself). Rebuild after changing
-`src/`.
+**`dist/` is committed to the repo** and is exactly what the marketplace ships:
+Claude Code installs the plugin by checking out `main` HEAD and runs `npm install`
+with lifecycle scripts **disabled**, so `prepare`/`tsc` never runs on install — an
+uncommitted `dist/` would simply be absent at runtime (this is what broke installs
+through v0.3.5). Always rebuild and commit `dist/` after changing `src/`
+(`npm run build`); CI fails if the committed `dist/` drifts from `src/`, and the
+release `version` hook rebuilds it into the release commit.
 
 ## Releasing
 
