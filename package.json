@@ -1,7 +1,7 @@
 {
   "name": "axtar-plugin",
   "version": "0.3.3",
-  "description": "Axtar plugin for Claude Code — Phase 3 hooks-only skeleton.",
+  "description": "Axtar plugin for Claude Code — governs code edits via PreToolUse/PostToolUse hooks and a Mentor consult MCP server.",
   "type": "module",
   "private": true,
   "engines": {
@@ -16,9 +16,7 @@
     "format": "prettier --write src test",
     "format:check": "prettier --check src test",
     "typecheck": "tsc --noEmit",
-    "clean": "rm -rf dist",
-    "build:codex": "npm run build && node scripts/build-codex.mjs",
-    "clean:codex": "rm -rf codex-build"
+    "clean": "rm -rf dist"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.29.0",

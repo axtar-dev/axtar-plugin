@@ -1,0 +1,13 @@
+{
+  "name": "axtar",
+  "owner": {
+    "name": "Axtar"
+  },
+  "plugins": [
+    {
+      "name": "axtar",
+      "source": "./",
+      "description": "Governs code edits in Claude Code via PreToolUse/PostToolUse hooks and a Mentor consult MCP server."
+    }
+  ]
+}

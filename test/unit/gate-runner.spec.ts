@@ -16,7 +16,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { claudeCodeOutputAdapter } from '../../src/hosts/claude-code/adapter.js';
 import { assembleForPre, parseHookInput } from '../../src/hosts/claude-code/assemble.js';
-import { codexOutputAdapter } from '../../src/hosts/codex/adapter.js';
 import { run } from '../../src/shared/runner.js';
 
 const ENGINE_URL = 'http://127.0.0.1:9999';
@@ -106,18 +105,6 @@ describe('runner — mentor gate wiring', () => {
     return stderrSpy.mock.calls.map(([c]: [unknown]) => String(c)).join('');
   }
 
-  function stdoutText(): string {
-    return stdoutSpy.mock.calls.map(([c]: [unknown]) => String(c)).join('');
-  }
-
-  // Body of the most recent /bypass POST (best-effort audit), parsed.
-  function lastBypassBody(): Record<string, unknown> | undefined {
-    const call = fetchSpy.mock.calls.find(([u]) => String(u).endsWith('/bypass'));
-    if (!call) return undefined;
-    const init = call[1] as { body?: string } | undefined;
-    return init?.body ? (JSON.parse(init.body) as Record<string, unknown>) : undefined;
-  }
-
   it('BLOCK: gate ok + not cleared → exit 2 + consult advisory carrying host session id', async () => {
     fetchSpy.mockImplementation((url: string | URL) => {
       const u = String(url);
@@ -155,70 +142,6 @@ describe('runner — mentor gate wiring', () => {
     // No bypass audit attempted on a real denial.
     const urls = fetchSpy.mock.calls.map(([u]) => String(u));
     expect(urls.some((u) => u.endsWith('/bypass'))).toBe(false);
-  });
-
-  it('CODEX advisory: gate ok + not cleared on a host WITHOUT consult tool → exit 0 + governance advisory + audit (never deny)', async () => {
-    fetchSpy.mockImplementation((url: string | URL) => {
-      const u = String(url);
-      if (u.endsWith('/rules')) return Promise.resolve(rulesResponse());
-      if (u.endsWith('/evaluate')) return Promise.resolve(evaluateConsultRequired());
-      if (u.endsWith('/gate')) {
-        return Promise.resolve(
-          new Response(
-            JSON.stringify({
-              cleared: false,
-              triggered_rule_ids: ['AXT-ARC-1'],
-              reason: 'consult_required',
-            }),
-            { status: 200, headers: { 'content-type': 'application/json' } },
-          ),
-        );
-      }
-      if (u.endsWith('/bypass')) {
-        return Promise.resolve(
-          new Response(JSON.stringify({ id: 'bypass-rec-1' }), {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }),
-        );
-      }
-      return Promise.resolve(new Response('not reached', { status: 500 }));
-    });
-
-    await expect(
-      run(STDIN, {
-        hook: 'PreToolUse',
-        severities: new Set(['blocking']),
-        parseInput: parseHookInput,
-        assemble: assembleForPre,
-        // The host WITHOUT the consult tool (codex): adapter + flag both reflect it.
-        outputAdapter: codexOutputAdapter,
-        consultLoopAvailable: false,
-      }),
-    ).rejects.toThrow('__test_exit__');
-
-    // Non-blocking: codex never dead-ends at a tool it cannot call.
-    expect(exitCode).toBe(0);
-
-    // The emitted stdout is a codex envelope carrying the governance ADVISORY
-    // in additionalContext — NOT a permissionDecision:"deny".
-    const out = stdoutText();
-    const envelope = JSON.parse(out) as {
-      hookSpecificOutput?: { additionalContext?: string; permissionDecision?: string };
-    };
-    expect(envelope.hookSpecificOutput?.permissionDecision).toBeUndefined();
-    const advisory = envelope.hookSpecificOutput?.additionalContext ?? '';
-    // The advisory NAMES the triggered rule and reads as an advisory, not a gate.
-    expect(advisory).toContain('AXT-ARC-1');
-    expect(advisory.toLowerCase()).toContain('advisory');
-    expect(advisory).toContain('NOT a mandatory gate');
-
-    // A best-effort /bypass audit was attempted with the host-specific reason.
-    const urls = fetchSpy.mock.calls.map(([u]) => String(u));
-    expect(urls.some((u) => u.endsWith('/bypass'))).toBe(true);
-    const body = lastBypassBody();
-    expect(body?.reason).toBe('consult_unavailable_on_host');
-    expect(body?.triggered_rule_ids).toEqual(['AXT-ARC-1']);
   });
 
   it('FAIL-SOFT: gate unreachable AND bypass audit also fails → still exit 0 + advisory', async () => {

@@ -3,17 +3,13 @@
  *
  * The runner renders the gate block/bypass decisions through the host-neutral
  * OutputAdapter seam (`renderMentorBlock`, `renderMentorBypass`). These tests
- * pin each host's mapping:
- *   - Claude Code: block → exit 2 + message on stderr; bypass → exit 0 +
- *     message on stderr.
- *   - Codex: block → permissionDecision:"deny" envelope (exit 0); bypass →
- *     additionalContext envelope (exit 0).
+ * pin the Claude Code host's mapping:
+ *   - block → exit 2 + message on stderr; bypass → exit 0 + message on stderr.
  */
 
 import { describe, expect, it } from 'vitest';
 
 import { claudeCodeOutputAdapter } from '../../src/hosts/claude-code/adapter.js';
-import { codexOutputAdapter } from '../../src/hosts/codex/adapter.js';
 import { decideGate } from '../../src/shared/gate-step.js';
 
 const BLOCK_MSG = 'Axtar Mentor: consult required\nsession_id: sess-1\nGoverning rules: R1, R2';
@@ -82,25 +78,5 @@ describe('claude-code adapter — boxMentor does not split/wrap session_id or ru
     for (const ruleId of TRIGGERED_RULE_IDS) {
       expect(emission.stderr).toContain(ruleId);
     }
-  });
-});
-
-describe('codex adapter — mentor gate', () => {
-  it('renderMentorBlock → deny envelope, exit 0', () => {
-    const e = codexOutputAdapter.renderMentorBlock(BLOCK_MSG);
-    expect(e.exitCode).toBe(0);
-    const parsed = JSON.parse(e.stdout ?? '{}');
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
-    expect(parsed.hookSpecificOutput.permissionDecision).toBe('deny');
-    expect(parsed.hookSpecificOutput.permissionDecisionReason).toBe(BLOCK_MSG);
-  });
-
-  it('renderMentorBypass → additionalContext envelope, exit 0', () => {
-    const e = codexOutputAdapter.renderMentorBypass(BYPASS_MSG);
-    expect(e.exitCode).toBe(0);
-    const parsed = JSON.parse(e.stdout ?? '{}');
-    expect(parsed.hookSpecificOutput.hookEventName).toBe('PreToolUse');
-    expect(parsed.hookSpecificOutput.additionalContext).toBe(BYPASS_MSG);
-    expect(parsed.hookSpecificOutput.permissionDecision).toBeUndefined();
   });
 });
