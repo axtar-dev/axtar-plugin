@@ -1,0 +1,6 @@
+{
+  "tool": "Edit",
+  "file_path": "file_before.java",
+  "old_string": "    public int add(int a, int b) {\n        int result = a + b;\n        return result;\n    }",
+  "new_string": "    public int add(int a, int b) {\n        // Defensive overflow check.\n        if ((b > 0 && a > Integer.MAX_VALUE - b) ||\n            (b < 0 && a < Integer.MIN_VALUE - b)) {\n            throw new ArithmeticException(\"integer overflow\");\n        }\n        return a + b;\n    }"
+}

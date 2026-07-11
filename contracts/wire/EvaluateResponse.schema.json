@@ -1,0 +1,148 @@
+{
+  "$defs": {
+    "Foundation": {
+      "additionalProperties": false,
+      "properties": {
+        "spec": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spec"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rationale"
+        },
+        "authored_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Authored By"
+        },
+        "enforced_since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enforced Since"
+        }
+      },
+      "title": "Foundation",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "blocking",
+        "warning",
+        "suggestion"
+      ],
+      "title": "Severity",
+      "type": "string"
+    },
+    "Verdict": {
+      "enum": [
+        "block",
+        "warn",
+        "pass"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    },
+    "Violation": {
+      "additionalProperties": false,
+      "properties": {
+        "rule_id": {
+          "title": "Rule Id",
+          "type": "string"
+        },
+        "severity": {
+          "$ref": "#/$defs/Severity"
+        },
+        "message": {
+          "title": "Message",
+          "type": "string"
+        },
+        "foundation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Foundation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "fix_suggestion": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Fix Suggestion"
+        }
+      },
+      "required": [
+        "rule_id",
+        "severity",
+        "message"
+      ],
+      "title": "Violation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "verdict": {
+      "$ref": "#/$defs/Verdict"
+    },
+    "violations": {
+      "items": {
+        "$ref": "#/$defs/Violation"
+      },
+      "title": "Violations",
+      "type": "array"
+    },
+    "consult_required": {
+      "default": false,
+      "title": "Consult Required",
+      "type": "boolean"
+    }
+  },
+  "required": [
+    "verdict",
+    "violations"
+  ],
+  "title": "EvaluateResponse",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

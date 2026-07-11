@@ -1,0 +1,6 @@
+{
+  "tool": "Edit",
+  "file_path": "file_before.java",
+  "old_string": "    private double price = 0.0;",
+  "new_string": "    private BigDecimal price = BigDecimal.ZERO;"
+}

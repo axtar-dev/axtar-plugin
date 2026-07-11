@@ -1,0 +1,38 @@
+{
+  "name": "axtar-plugin",
+  "version": "0.3.3",
+  "description": "Axtar plugin for Claude Code — Phase 3 hooks-only skeleton.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc --watch",
+    "test": "vitest run",
+    "test:integration": "RUN_INTEGRATION=1 vitest run",
+    "lint": "eslint src test",
+    "format": "prettier --write src test",
+    "format:check": "prettier --check src test",
+    "typecheck": "tsc --noEmit",
+    "clean": "rm -rf dist",
+    "build:codex": "npm run build && node scripts/build-codex.mjs",
+    "clean:codex": "rm -rf codex-build"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "@typescript-eslint/eslint-plugin": "^8.4.0",
+    "@typescript-eslint/parser": "^8.4.0",
+    "ajv": "^8.17.1",
+    "ajv-formats": "^3.0.1",
+    "eslint": "^9.10.0",
+    "prettier": "^3.3.3",
+    "typescript": "^5.5.4",
+    "vitest": "^4.1.5"
+  }
+}

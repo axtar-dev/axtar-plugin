@@ -1,0 +1,7 @@
+{
+  "tool": "Edit",
+  "file_path": "file_before.java",
+  "old_string": "oldName",
+  "new_string": "newName",
+  "replace_all": true
+}

@@ -1,0 +1,29 @@
+{
+  "description": "Axtar hooks — gate code edits via the engine /evaluate endpoint.",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Bash|apply_patch|mcp__.*__(write|edit|create|delete|move).*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hosts/claude-code/entrypoints/pre.js",
+            "timeout": 2
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|Bash|apply_patch|mcp__.*__(write|edit|create|delete|move).*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hosts/claude-code/entrypoints/post.js",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}

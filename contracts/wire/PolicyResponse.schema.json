@@ -1,0 +1,15 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "autonomy_rung": {
+      "title": "Autonomy Rung",
+      "type": "string"
+    }
+  },
+  "required": [
+    "autonomy_rung"
+  ],
+  "title": "PolicyResponse",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

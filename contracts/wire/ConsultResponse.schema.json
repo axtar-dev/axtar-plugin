@@ -1,0 +1,84 @@
+{
+  "$defs": {
+    "UndeterminedChoice": {
+      "additionalProperties": false,
+      "properties": {
+        "decision": {
+          "title": "Decision",
+          "type": "string"
+        },
+        "alternatives": {
+          "title": "Alternatives",
+          "type": "string"
+        },
+        "why_unconstrained": {
+          "title": "Why Unconstrained",
+          "type": "string"
+        }
+      },
+      "required": [
+        "decision",
+        "alternatives",
+        "why_unconstrained"
+      ],
+      "title": "UndeterminedChoice",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "answer": {
+      "title": "Answer",
+      "type": "string"
+    },
+    "verdict": {
+      "enum": [
+        "approve",
+        "revise",
+        "block"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    },
+    "rationale": {
+      "title": "Rationale",
+      "type": "string"
+    },
+    "approved_files": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Approved Files",
+      "type": "array"
+    },
+    "follow_up_questions": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Follow Up Questions",
+      "type": "array"
+    },
+    "determinacy": {
+      "default": "dictated",
+      "title": "Determinacy",
+      "type": "string"
+    },
+    "underdetermined_choices": {
+      "items": {
+        "$ref": "#/$defs/UndeterminedChoice"
+      },
+      "title": "Underdetermined Choices",
+      "type": "array"
+    }
+  },
+  "required": [
+    "answer",
+    "verdict",
+    "rationale",
+    "approved_files",
+    "follow_up_questions"
+  ],
+  "title": "ConsultResponse",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

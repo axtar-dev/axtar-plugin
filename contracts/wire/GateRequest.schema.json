@@ -1,0 +1,34 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "session_id": {
+      "minLength": 1,
+      "title": "Session Id",
+      "type": "string"
+    },
+    "file_path": {
+      "minLength": 1,
+      "title": "File Path",
+      "type": "string"
+    },
+    "rule_set": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Rule Set",
+      "type": "array"
+    },
+    "project_id": {
+      "title": "Project Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "session_id",
+    "file_path",
+    "rule_set"
+  ],
+  "title": "GateRequest",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

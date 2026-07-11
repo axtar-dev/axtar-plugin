@@ -1,0 +1,57 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "cleared": {
+      "title": "Cleared",
+      "type": "boolean"
+    },
+    "triggered_rule_ids": {
+      "items": {
+        "type": "string"
+      },
+      "title": "Triggered Rule Ids",
+      "type": "array"
+    },
+    "reason": {
+      "title": "Reason",
+      "type": "string"
+    },
+    "guidance": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Guidance"
+    },
+    "escalate": {
+      "default": false,
+      "title": "Escalate",
+      "type": "boolean"
+    },
+    "attempt": {
+      "anyOf": [
+        {
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Attempt"
+    }
+  },
+  "required": [
+    "cleared",
+    "triggered_rule_ids",
+    "reason"
+  ],
+  "title": "GateResponse",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

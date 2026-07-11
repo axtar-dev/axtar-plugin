@@ -1,0 +1,113 @@
+{
+  "$defs": {
+    "Foundation": {
+      "additionalProperties": false,
+      "properties": {
+        "spec": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Spec"
+        },
+        "rationale": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rationale"
+        },
+        "authored_by": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Authored By"
+        },
+        "enforced_since": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enforced Since"
+        }
+      },
+      "title": "Foundation",
+      "type": "object"
+    },
+    "Severity": {
+      "enum": [
+        "blocking",
+        "warning",
+        "suggestion"
+      ],
+      "title": "Severity",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "rule_id": {
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "severity": {
+      "$ref": "#/$defs/Severity"
+    },
+    "message": {
+      "title": "Message",
+      "type": "string"
+    },
+    "foundation": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Foundation"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "fix_suggestion": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Fix Suggestion"
+    }
+  },
+  "required": [
+    "rule_id",
+    "severity",
+    "message"
+  ],
+  "title": "Violation",
+  "type": "object",
+  "$schema": "https://json-schema.org/draft/2020-12/schema"
+}

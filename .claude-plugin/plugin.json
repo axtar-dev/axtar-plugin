@@ -1,0 +1,8 @@
+{
+  "name": "axtar",
+  "version": "0.3.1",
+  "description": "Axtar — foundation layer between AI agents and code execution.",
+  "author": {
+    "name": "Axtar"
+  }
+}
