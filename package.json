@@ -1,6 +1,6 @@
 {
   "name": "axtar-plugin",
-  "version": "0.3.5",
+  "version": "0.3.6",
   "description": "Axtar plugin for Claude Code — governs code edits via PreToolUse/PostToolUse hooks and a Mentor consult MCP server.",
   "type": "module",
   "private": true,
