@@ -1,5 +1,6 @@
 {
   "name": "axtar",
+  "description": "Axtar — the foundation layer that governs AI agent code edits against your organization's rules.",
   "owner": {
     "name": "Axtar"
   },
