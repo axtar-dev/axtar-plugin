@@ -23,7 +23,7 @@ literally cannot land it until the violation is resolved.
                         │        │                   │             │
                         │        │            assemble edit → diff │
                         │        ▼                   ▼             │
-                        │   POST /rules        POST /evaluate ─────┼──►  Axtar
+                        │   GET /rules         POST /evaluate ─────┼──►  Axtar
                         │        │                   │             │     engine
                         │        │              verdict + gate     │   (platform)
                         │        ▼                   ▼             │

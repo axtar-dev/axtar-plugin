@@ -37,8 +37,8 @@ the committed files diverge from the regenerated output.
 
 ## Drift detection
 
-The plugin hand-writes Zod schemas in `plugin/src/wire/schemas.ts`. A
-vitest contract test (`plugin/test/unit/contract.spec.ts`) reads each
+The plugin hand-writes Zod schemas in `src/shared/wire/schemas.ts`. A
+vitest contract test (`test/unit/contract.spec.ts`) reads each
 JSON Schema in this directory, validates a canonical fixture through
 both Ajv (against the JSON Schema) and Zod, and asserts both accept the
 same shape. Drift between Pydantic and Zod surfaces as a unit-test
