@@ -1,15 +1,14 @@
 /**
- * stderr-only structured logger. Stdout is reserved for Claude Code; anything
- * we print to stdout risks being misinterpreted as hook output. Keep this
- * extremely small — the hook is on the latency-critical path.
+ * stderr-only structured logger.
  *
- * Also home to the diagnostic file-trace facility (`trace`, gated on
- * `AXTAR_HOOK_TRACE="true"`). Lives here because it's the second diagnostic
- * concern alongside structured logging, and de-duplicating it out of
- * `runner.ts` and `rules/cache.ts` was the one piece of real work folded into
- * the Step 11.5.1a shared-tree move (per `DECISIONS.md` D-039 commit notes).
+ * **stdout is the MCP JSON-RPC channel.** A stray `console.log` there is not a
+ * cosmetic problem — it corrupts the framing and the host drops the connection.
+ * Every diagnostic in this package goes through here, and here writes to
+ * `process.stderr`, always.
+ *
+ * `AXTAR_LOG_LEVEL` (`debug` · `info` · `warn` · `error`) sets the floor;
+ * default `info`.
  */
-import { appendFileSync } from 'node:fs';
 const levelOrder = {
     debug: 10,
     info: 20,
@@ -40,63 +39,4 @@ export const log = {
     warn: (m, f) => emit('warn', m, f),
     error: (m, f) => emit('error', m, f),
 };
-// ───────────────────────────────────────────────────────────────────────────
-// Diagnostic file trace — `AXTAR_HOOK_TRACE="true"` opts in. Off by default;
-// when unset, `trace()` is a single boolean compare per call site, no
-// formatting, no fs syscall. The §8 sub-500ms SLA sees zero cost.
-//
-// Originally lived inline in `runner.ts` and `rules/cache.ts` (two
-// independent copies). Folded here as part of Step 11.5.1a's shared-tree
-// move so both call sites import the same helper. The runner.ts variant's
-// `formatValue` (truncates long strings, single-lines them) wins as
-// canonical; outputs match the prior `JSON.stringify` form in cache.ts for
-// the simple values cache events pass.
-// ───────────────────────────────────────────────────────────────────────────
-export const TRACE_ENABLED = process.env.AXTAR_HOOK_TRACE === 'true';
-const TRACE_PATH = '/tmp/axtar-hook-trace.log';
-function formatValue(v) {
-    if (v === null)
-        return 'null';
-    if (v === undefined)
-        return 'undefined';
-    if (typeof v === 'string') {
-        // Keep values single-line so each trace entry stays one line.
-        const cleaned = v.replace(/\s+/g, ' ');
-        return cleaned.length > 200 ? `"${cleaned.slice(0, 200)}…"` : `"${cleaned}"`;
-    }
-    if (typeof v === 'number' || typeof v === 'boolean')
-        return String(v);
-    try {
-        return JSON.stringify(v);
-    }
-    catch {
-        return String(v);
-    }
-}
-export function trace(label, fields = {}) {
-    if (!TRACE_ENABLED)
-        return;
-    try {
-        const parts = Object.entries(fields).map(([k, v]) => `${k}=${formatValue(v)}`);
-        const line = `[${new Date().toISOString()}] ${label}${parts.length > 0 ? ' ' + parts.join(' ') : ''}\n`;
-        appendFileSync(TRACE_PATH, line);
-    }
-    catch {
-        // Tracer must never break the hook. Swallow tracer-internal errors.
-    }
-}
-// Convenience for entrypoint top-of-module markers and crash-capture sites:
-// gated identical-shape line-emit that does not require building a fields
-// record. Equivalent to `if (TRACE_ENABLED) { try { appendFileSync(...) }
-// catch {} }` inlined at each call site.
-export function traceRaw(line) {
-    if (!TRACE_ENABLED)
-        return;
-    try {
-        appendFileSync(TRACE_PATH, line);
-    }
-    catch {
-        // Tracer must never break the hook.
-    }
-}
 //# sourceMappingURL=log.js.map

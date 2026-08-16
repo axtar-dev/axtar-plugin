@@ -1,0 +1,505 @@
+/**
+ * The Axtar checks MCP server — the plugin's only runtime surface (spec §15).
+ *
+ * Two tools, the two calls of §9:
+ *
+ * - **`axtar_check_diff`** — the finished change. The agent passes no diff and
+ *   no file contents: this server is the local *packet producer*
+ *   (`shared/producer.ts`). It resolves `base_ref`, runs `git diff` against the
+ *   working tree, reads the changed and untracked files whole, and uploads once.
+ * - **`axtar_check_spec`** — the plan, before any code exists. Exactly one of
+ *   `spec` or `spec_path`; a path is **read here**, so an agent never pastes a
+ *   file it already has on disk into a tool call.
+ *
+ * Both post to the platform's `/mentor` sub-app with `AXTAR_API_KEY`, against
+ * the project named by `.axtar/config.yml` at the repo root. Unconfigured or
+ * unbound, they **refuse with setup instructions** rather than check against
+ * nothing — and the refusal says, in as many words, that it is not a verdict.
+ *
+ * **This surface fails open** (§12). Engine down, timeout, 500, a body the wire
+ * schemas cannot parse — every one comes back as text saying no verdict exists
+ * and work may proceed. Nothing here throws an MCP error, and nothing here
+ * invents a verdict; CI is the surface that fails closed.
+ *
+ * **stdout is the JSON-RPC channel — never write to it.** Diagnostics go to
+ * stderr through `shared/log.ts`.
+ */
+
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+
+import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import { z } from 'zod';
+
+import { createEngineClient } from '../shared/engine/client.js';
+import type { EngineClient, EngineFailure } from '../shared/engine/client.js';
+import type { EngineConfig } from '../shared/engine/config.js';
+import { loadEngineConfig, setupInstructions } from '../shared/engine/config.js';
+import { log } from '../shared/log.js';
+import type { DiffPacket, ProduceOptions, ProducerOutcome } from '../shared/producer.js';
+import { producePacket } from '../shared/producer.js';
+import { bindingInstructions, loadRepoBinding } from '../shared/project/config.js';
+import {
+  renderDiffResponse,
+  renderFailOpen,
+  renderRefusal,
+  renderSchemaDrift,
+  renderSpecResponse,
+} from '../shared/render.js';
+import type { DiffCheckRequest, SpecCheckRequest } from '../shared/wire/checks.js';
+import {
+  DIFF_CHECK_PATH,
+  DiffCheckRequestSchema,
+  SPEC_CHECK_PATH,
+  SpecCheckRequestSchema,
+  parseDiffCheckResponse,
+  parseSpecCheckResponse,
+} from '../shared/wire/checks.js';
+
+export const SERVER_NAME = 'axtar';
+export const SERVER_VERSION = '0.1.0';
+
+// --- the tool arguments ------------------------------------------------------
+
+/**
+ * The shapes double as the tools' published JSON Schema and as the guard the
+ * handlers parse with, so an argument that reaches a handler has been through
+ * zod whatever the host validated.
+ */
+export const CheckDiffArgsShape = {
+  base_ref: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Optional. The ref the change is measured against. Default: the merge-base of HEAD with ' +
+        'the default branch (origin/HEAD, else origin/main, else main).',
+    ),
+  spec_path: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Optional. Path to the spec this change implements; the server reads it. Do not paste ' +
+        'file contents.',
+    ),
+  ref: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Optional. The thread this check belongs to (branch, PR number, spec id). Default: the ' +
+        'current branch name.',
+    ),
+};
+export const CheckDiffArgsSchema = z.object(CheckDiffArgsShape).strict();
+
+export const CheckSpecArgsShape = {
+  spec: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('The spec text itself. Use this only for a plan that is not on disk.'),
+  spec_path: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Path to the spec file; the server reads it from disk. Prefer this — do not paste the ' +
+        'contents of a file you already have a path to.',
+    ),
+  ref: z
+    .string()
+    .min(1)
+    .optional()
+    .describe('Optional. The thread this check belongs to (branch, PR number, spec id).'),
+};
+
+/**
+ * Exactly one of `spec` / `spec_path` — enforced by the schema, not by a
+ * hand-rolled `if`, so the message is the same wherever the arguments come from.
+ */
+export const CheckSpecArgsSchema = z
+  .object(CheckSpecArgsShape)
+  .strict()
+  .superRefine((args, ctx) => {
+    const given = [args.spec, args.spec_path].filter(
+      (value) => value !== undefined && value.trim().length > 0,
+    ).length;
+    if (given !== 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        message:
+          'pass exactly one of `spec` or `spec_path` — `spec_path` for a spec on disk (the ' +
+          'server reads it), `spec` only for text that has no file.',
+      });
+    }
+  });
+
+// --- dependencies ------------------------------------------------------------
+
+export interface ServerDeps {
+  /** Environment the engine connection is read from. */
+  env: Record<string, string | undefined>;
+  /** Where the repo (and `.axtar/config.yml`) is looked for. */
+  cwd: string;
+  /** Seam for tests: the HTTP client the tools post through. */
+  createClient: (config: EngineConfig) => EngineClient;
+  /** Seam for tests: the local packet producer. */
+  produce: (options: ProduceOptions) => Promise<ProducerOutcome<DiffPacket>>;
+  /** Seam for tests: how `spec_path` is read. */
+  readSpecFile: (absolutePath: string) => string;
+}
+
+export function defaultDeps(): ServerDeps {
+  return {
+    env: process.env,
+    cwd: process.cwd(),
+    createClient: createEngineClient,
+    produce: producePacket,
+    readSpecFile: (absolutePath) => readFileSync(absolutePath, 'utf-8'),
+  };
+}
+
+function text(body: string): CallToolResult {
+  return { content: [{ type: 'text', text: body }] };
+}
+
+// --- setup: the two things a check needs -------------------------------------
+
+interface Setup {
+  projectId: string;
+  configPath: string;
+  client: EngineClient;
+}
+
+/**
+ * The repo binding and the engine connection, or one refusal naming everything
+ * that is missing. Both are reported together: telling a developer about the
+ * env vars, and only then about the config, is two round trips for one setup.
+ */
+function resolveSetup(
+  deps: ServerDeps,
+): { ok: true; setup: Setup } | { ok: false; message: string } {
+  const binding = loadRepoBinding(deps.cwd);
+  const engine = loadEngineConfig(deps.env);
+
+  const problems: string[] = [];
+  if (!binding.ok) problems.push(bindingInstructions(binding));
+  if (!engine.ok) problems.push(setupInstructions(engine.missing));
+
+  if (!binding.ok || !engine.ok) {
+    return {
+      ok: false,
+      message: renderRefusal('Axtar is not set up for this repository', problems),
+    };
+  }
+
+  log.debug('repo binding resolved', {
+    project: binding.binding.projectId,
+    config: binding.binding.configPath,
+  });
+  return {
+    ok: true,
+    setup: {
+      projectId: binding.binding.projectId,
+      configPath: binding.binding.configPath,
+      client: deps.createClient(engine.config),
+    },
+  };
+}
+
+/** What an HTTP status from `/mentor` usually means, in the caller's terms. */
+function failureHint(failure: EngineFailure, projectId: string): string | undefined {
+  if (failure.reason !== 'http') return undefined;
+  switch (failure.status) {
+    case 401:
+    case 403:
+      return `AXTAR_API_KEY was rejected — check the key in the portal's Settings → API keys.`;
+    case 404:
+      return `project ${projectId} does not exist for this API key — check 'project:' in .axtar/config.yml.`;
+    case 409:
+      return 'the organization has no usable LLM provider configured — set one up in the portal.';
+    case 422:
+      return `the platform rejected the packet — 'project:' in .axtar/config.yml must be the project id the portal issued.`;
+    default:
+      return undefined;
+  }
+}
+
+function failOpen(
+  what: 'diff' | 'spec',
+  failure: EngineFailure,
+  projectId: string,
+): CallToolResult {
+  const reason =
+    failure.reason === 'http'
+      ? `HTTP ${failure.status} — ${failure.detail}`
+      : `${failure.reason} — ${failure.detail}`;
+  log.warn('check failed open', { what, reason });
+  return text(renderFailOpen(what, reason, failureHint(failure, projectId)));
+}
+
+function argumentRefusal(tool: string, error: z.ZodError): CallToolResult {
+  return text(
+    renderRefusal(
+      `${tool} was called with arguments it cannot use`,
+      error.issues.map((issue) => {
+        const path = issue.path.length > 0 ? `${issue.path.join('.')}: ` : '';
+        return `${path}${issue.message}`;
+      }),
+    ),
+  );
+}
+
+/** A spec named by path is read here — that is what the tool description promises. */
+function readSpec(
+  deps: ServerDeps,
+  specPath: string,
+): { ok: true; spec: string } | { ok: false; message: string } {
+  const absolute = resolve(deps.cwd, specPath);
+  try {
+    const spec = deps.readSpecFile(absolute);
+    if (spec.trim().length === 0) {
+      return { ok: false, message: renderRefusal('The spec file is empty', [absolute]) };
+    }
+    return { ok: true, spec };
+  } catch (err) {
+    return {
+      ok: false,
+      message: renderRefusal('The spec file could not be read', [
+        `${absolute}: ${err instanceof Error ? err.message : String(err)}`,
+      ]),
+    };
+  }
+}
+
+/** Why the packet could not be built — local, actionable, and not a verdict. */
+function producerRefusal(
+  failure: Extract<ProducerOutcome<DiffPacket>, { ok: false }>,
+): CallToolResult {
+  const advice: Record<string, string> = {
+    not_a_repo: 'Run the check from inside a git work tree.',
+    no_commits: 'Make at least one commit, or pass base_ref explicitly.',
+    unknown_base_ref: 'Fetch the ref first, or pass a base_ref this repo knows.',
+    no_base_ref: 'Pass base_ref explicitly (for example the branch you will merge into).',
+    git_failed: 'Check that git works in this directory, then re-run.',
+  };
+  return text(
+    renderRefusal('Axtar could not assemble the diff packet', [
+      `${failure.reason}: ${failure.detail}`,
+      advice[failure.reason] ?? 'Re-run once git is usable here.',
+    ]),
+  );
+}
+
+/** The one line of producer provenance the agent gets, after the findings. */
+function packetNote(packet: DiffPacket): string {
+  const parts = [
+    `${packet.files.length} file(s) sent whole`,
+    `base ${packet.baseRef.slice(0, 12)} (${packet.baseRefLabel})`,
+  ];
+  if (packet.untracked.length > 0) parts.push(`${packet.untracked.length} untracked included`);
+  if (packet.binarySkipped.length > 0) {
+    parts.push(
+      `${packet.binarySkipped.length} binary skipped (${packet.binarySkipped.join(', ')})`,
+    );
+  }
+  return `packet: ${parts.join(' · ')}`;
+}
+
+// --- the tools ---------------------------------------------------------------
+
+export async function runCheckDiff(rawArgs: unknown, deps: ServerDeps): Promise<CallToolResult> {
+  const args = CheckDiffArgsSchema.safeParse(rawArgs ?? {});
+  if (!args.success) return argumentRefusal('axtar_check_diff', args.error);
+
+  const setup = resolveSetup(deps);
+  if (!setup.ok) return text(setup.message);
+
+  const produced = await deps.produce({ cwd: deps.cwd, baseRef: args.data.base_ref });
+  if (!produced.ok) return producerRefusal(produced);
+  const packet = produced.value;
+
+  let spec: string | undefined;
+  if (args.data.spec_path !== undefined) {
+    const read = readSpec(deps, args.data.spec_path);
+    if (!read.ok) return text(read.message);
+    spec = read.spec;
+  }
+
+  const ref = args.data.ref ?? packet.branch ?? undefined;
+  const body: DiffCheckRequest = {
+    project: setup.setup.projectId,
+    diff: packet.diff,
+    base_ref: packet.baseRef,
+    files: packet.files,
+    ...(spec === undefined ? {} : { spec }),
+    ...(ref === undefined ? {} : { ref }),
+  };
+
+  // Our own packet, validated before it ships: the platform forbids unknown
+  // fields, and a producer bug should name itself here rather than come back
+  // as a 422 the agent has to decode.
+  const request = DiffCheckRequestSchema.safeParse(body);
+  if (!request.success) return argumentRefusal('the diff packet', request.error);
+
+  log.info('posting diff check', {
+    project: setup.setup.projectId,
+    files: packet.files.length,
+    base: packet.baseRef,
+    ref: ref ?? null,
+  });
+
+  const result = await setup.setup.client.post(DIFF_CHECK_PATH, request.data, {
+    parse: parseDiffCheckResponse,
+  });
+  if (!result.ok) return failOpen('diff', result, setup.setup.projectId);
+  if (!result.value.ok) {
+    log.warn('diff response failed the wire schema', { issues: result.value.issues });
+    return text(`${renderSchemaDrift('diff', result.value)}\n\n${packetNote(packet)}`);
+  }
+  return text(`${renderDiffResponse(result.value.value)}\n\n${packetNote(packet)}`);
+}
+
+export async function runCheckSpec(rawArgs: unknown, deps: ServerDeps): Promise<CallToolResult> {
+  const args = CheckSpecArgsSchema.safeParse(rawArgs ?? {});
+  if (!args.success) return argumentRefusal('axtar_check_spec', args.error);
+
+  const setup = resolveSetup(deps);
+  if (!setup.ok) return text(setup.message);
+
+  let spec = args.data.spec;
+  if (args.data.spec_path !== undefined) {
+    const read = readSpec(deps, args.data.spec_path);
+    if (!read.ok) return text(read.message);
+    spec = read.spec;
+  }
+  if (spec === undefined) {
+    // Unreachable through the schema; kept so a refactor cannot ship a request
+    // with no artifact in it.
+    return text(renderRefusal('axtar_check_spec received no spec', ['pass `spec` or `spec_path`']));
+  }
+
+  const body: SpecCheckRequest = {
+    project: setup.setup.projectId,
+    spec,
+    ...(args.data.ref === undefined ? {} : { ref: args.data.ref }),
+  };
+  const request = SpecCheckRequestSchema.safeParse(body);
+  if (!request.success) return argumentRefusal('the spec packet', request.error);
+
+  log.info('posting spec check', {
+    project: setup.setup.projectId,
+    chars: spec.length,
+    ref: args.data.ref ?? null,
+  });
+
+  const result = await setup.setup.client.post(SPEC_CHECK_PATH, request.data, {
+    parse: parseSpecCheckResponse,
+  });
+  if (!result.ok) return failOpen('spec', result, setup.setup.projectId);
+  if (!result.value.ok) {
+    log.warn('spec response failed the wire schema', { issues: result.value.issues });
+    return text(renderSchemaDrift('spec', result.value));
+  }
+  return text(renderSpecResponse(result.value.value));
+}
+
+// --- registration ------------------------------------------------------------
+
+export const CHECK_DIFF_DESCRIPTION = [
+  "Check the change you just made against the rules this repo's Axtar project enforces, and get",
+  'back the breaches, the advisories, and a receipt of what was considered.',
+  '',
+  'Call it when a change is done, before you summarise it or open a PR.',
+  '',
+  'Pass NO diff and NO file contents: this server reads the working tree itself (uncommitted and',
+  'untracked work included) and uploads the packet. base_ref defaults to the merge-base with the',
+  'default branch; ref defaults to the current branch.',
+  '',
+  'Surface the receipt block it returns (check_id, url, summary) verbatim in your summary to the',
+  'developer and in any PR description you write — it is the evidence the change was checked',
+  'against the whole rule corpus, and the url is the immutable record of it.',
+].join('\n');
+
+export const CHECK_SPEC_DESCRIPTION = [
+  'Check a plan BEFORE writing code: returns the constraints the spec should state, the passages',
+  'a rule forbids, the rules it leaves unaddressed, and a receipt of what was considered.',
+  '',
+  'Call it as soon as a spec or plan exists — the corrections are free here and expensive later.',
+  'Paste the must_state lines into the spec so whatever implements it carries the governance.',
+  'Advisory, always: a spec check never blocks.',
+  '',
+  'Pass exactly one of spec or spec_path. For a spec on disk pass spec_path — the server reads',
+  'the file; do not paste file contents you already have a path to.',
+  '',
+  'Surface the receipt block it returns (check_id, url, summary) verbatim in your summary to the',
+  'developer — it is the evidence the plan was checked against the whole rule corpus.',
+].join('\n');
+
+/**
+ * The last line of the fail-open guarantee (§12).
+ *
+ * The handlers below are written not to throw, and the engine client never
+ * does — but "never throws" is a property that has to survive every future
+ * edit, and a bug in this plugin must not surface to the agent as a failed tool
+ * call it might retry or reason about. Anything unexpected becomes the same
+ * text every other outage produces: no verdict, work may proceed.
+ */
+async function guarded(
+  what: 'diff' | 'spec',
+  run: () => Promise<CallToolResult>,
+): Promise<CallToolResult> {
+  try {
+    return await run();
+  } catch (err) {
+    const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+    log.error('tool handler threw — failing open', { what, detail });
+    return text(renderFailOpen(what, `the plugin hit an internal error (${detail})`));
+  }
+}
+
+export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
+  const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
+
+  server.registerTool(
+    'axtar_check_diff',
+    {
+      title: 'Axtar: check this change',
+      description: CHECK_DIFF_DESCRIPTION,
+      inputSchema: CheckDiffArgsShape,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    (args) => guarded('diff', () => runCheckDiff(args, deps)),
+  );
+
+  server.registerTool(
+    'axtar_check_spec',
+    {
+      title: 'Axtar: check this spec',
+      description: CHECK_SPEC_DESCRIPTION,
+      inputSchema: CheckSpecArgsShape,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    (args) => guarded('spec', () => runCheckSpec(args, deps)),
+  );
+
+  return server;
+}
+
+export async function main(): Promise<void> {
+  const server = createServer();
+  await server.connect(new StdioServerTransport());
+  log.info('axtar checks mcp server ready', { tools: 2 });
+}
+
+// Start only when run as the entrypoint (not when imported by tests).
+if (process.argv[1] && process.argv[1].endsWith('checks-server.js')) {
+  main().catch((e: unknown) => {
+    process.stderr.write(`axtar checks mcp crashed: ${String(e)}\n`);
+    process.exit(1);
+  });
+}

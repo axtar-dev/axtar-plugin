@@ -57,9 +57,7 @@ jobs:
 
       - name: Verify runtime + test + validate before publishing
         run: |
-          test -f dist/hosts/claude-code/entrypoints/pre.js
-          test -f dist/mcp/consult-server.js
-          test -f dist/cli/projects.js
+          test -f dist/mcp/checks-server.js
           npm test
           npm run validate:manifests
 

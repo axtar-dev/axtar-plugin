@@ -34,12 +34,8 @@ jobs:
             exit 1
           fi
 
-      - name: Verify the runtime the hooks & MCP point at exists
-        run: |
-          test -f dist/hosts/claude-code/entrypoints/pre.js
-          test -f dist/hosts/claude-code/entrypoints/post.js
-          test -f dist/mcp/consult-server.js
-          test -f dist/cli/projects.js
+      - name: Verify the runtime .mcp.json points at exists
+        run: test -f dist/mcp/checks-server.js
 
       - name: Typecheck
         run: npm run typecheck

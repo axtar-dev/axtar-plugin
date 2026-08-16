@@ -1,7 +1,7 @@
 {
   "name": "axtar",
   "version": "0.3.6",
-  "description": "Axtar — foundation layer between AI agents and code execution.",
+  "description": "Axtar — spec and diff checks against your team's rule corpus.",
   "author": {
     "name": "Axtar"
   }
