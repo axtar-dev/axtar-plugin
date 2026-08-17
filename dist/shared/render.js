@@ -162,6 +162,97 @@ export function renderSpecResponse(response) {
     lines.push(...droppedSection(response.dropped), '', SURFACE_IT);
     return lines.join('\n');
 }
+const PLACEHOLDER_ID = '<project id from the portal>';
+function projectBlock(index, project, bound) {
+    return [
+        `${index}. ${project.name}${bound ? '   ← this repo is bound to this project' : ''}`,
+        `   id:     ${project.id}`,
+        `   rules:  ${project.rule_count} in the pool`,
+        `   repo:   ${project.repo_full_name ?? '(none linked)'}`,
+    ].join('\n');
+}
+/**
+ * The `.axtar/config.yml` snippet, then the three shapes §6 allows.
+ *
+ * This footer is the whole point of the tool: the plugin cannot bind a repo —
+ * **the committed file is the only binding mechanism** and nothing here ever
+ * writes it — so what an agent can be given is the exact text to write, the
+ * reminder that it has to be committed (and pushed before ingest can read it),
+ * and the shapes it may take.
+ */
+function bindingFooter(projectId) {
+    return [
+        'HOW TO BIND OR SWITCH — .axtar/config.yml at the repo root is the only binding',
+        'mechanism. There is no server-side selection: to change project, change this file.',
+        '',
+        'version: 1',
+        `project: ${projectId}`,
+        '',
+        'Commit it — the binding travels with the repo, not with a machine — and push it',
+        'before running ingest: the platform reads the committed file from the remote, so',
+        'an unpushed change is a change ingest cannot see.',
+        '',
+        'The three shapes the file may take (spec §6):',
+        '- binding-only — `version:` + `project:` and nothing else. Checks run against the',
+        "  project's rules; ingest reads nothing from this repo.",
+        '- docs-only — plus a `knowledge.docs:` list of `- path: <glob>` entries; a doc',
+        '  marked `kind: reference` is context only and never becomes a rule.',
+        '- docs+code — plus `knowledge.code:` with `enabled: true` and `include:` /',
+        '  `exclude:` globs, so conventions nobody wrote down are induced from the source.',
+        '',
+        'Run /axtar:projects to have the file written for you, /axtar:status to verify it.',
+    ].join('\n');
+}
+export function renderProjects(view) {
+    const lines = [];
+    if (view.unboundReason !== null) {
+        lines.push('This repo is bound to no Axtar project.', `- ${view.unboundReason}`, '- Until it is bound, axtar_check_spec and axtar_check_diff refuse here — pick a ' +
+            'project below and write the config at the end of this message.', '');
+    }
+    const bound = view.projects.find((project) => project.id === view.boundProjectId);
+    if (view.boundProjectId !== null) {
+        const named = bound === undefined ? '' : ` ("${bound.name}")`;
+        lines.push(`This repo is bound to project ${view.boundProjectId}${named}` +
+            `${view.configPath === null ? '' : `, per ${view.configPath}`}.`);
+        if (bound === undefined) {
+            lines.push('That id is NOT in the list below — it belongs to another organization, or the ' +
+                'project was deleted. Checks against it will fail until the config names a ' +
+                'project this API key can see.');
+        }
+        lines.push('');
+    }
+    if (view.projects.length === 0) {
+        lines.push('This API key can see no projects. Create one in the Axtar portal first — the portal ' +
+            'issues the project id the config has to carry.');
+    }
+    else {
+        lines.push(`PROJECTS (${view.projects.length}) — every project this API key can see:`, ...view.projects.map((project, i) => projectBlock(i + 1, project, project.id === view.boundProjectId)));
+    }
+    lines.push('', bindingFooter(bound?.id ?? view.projects[0]?.id ?? PLACEHOLDER_ID));
+    return lines.join('\n');
+}
+/**
+ * The platform could not be asked which projects exist.
+ *
+ * Fails open like every other agent-facing path (§12) — and still ends with the
+ * binding footer, because *how* to bind a repo is local knowledge that does not
+ * depend on the platform being up. Only the list of names was lost.
+ */
+export function renderProjectsFailure(reason, boundProjectId, hint) {
+    return [
+        'Axtar could not list your projects.',
+        `reason: ${reason}`,
+        ...(hint === undefined ? [] : [`hint:   ${hint}`]),
+        '',
+        'This is not a verdict about anything: no check ran, and no rule was cleared.',
+        boundProjectId === null
+            ? 'This repo names no project either, so nothing governs it yet.'
+            : `This repo still names project ${boundProjectId} — the committed config is unaffected ` +
+                'by the platform being unreachable.',
+        '',
+        bindingFooter(boundProjectId ?? PLACEHOLDER_ID),
+    ].join('\n');
+}
 // --- degraded: the platform answered, the contract moved ---------------------
 const MAX_RAW = 4000;
 function rawJson(raw) {
@@ -174,6 +265,11 @@ function rawJson(raw) {
     }
     return text.length > MAX_RAW ? `${text.slice(0, MAX_RAW)}\n… (truncated)` : text;
 }
+const SURFACE_LABEL = {
+    diff: 'diff check',
+    spec: 'spec check',
+    projects: 'projects listing',
+};
 /**
  * A response this plugin's schemas could not parse.
  *
@@ -186,7 +282,7 @@ export function renderSchemaDrift(kind, parsed) {
     const lines = [];
     if (salvaged !== null)
         lines.push(receiptBlock(salvaged), '');
-    lines.push(`Schema drift: the ${kind} check returned a body this plugin does not fully understand.`, 'The platform is ahead of (or behind) this plugin version — update it with `/plugin update axtar`.', '', 'What did not line up:', ...parsed.issues.map((issue) => `- ${issue}`), '', 'What came back, verbatim — read it, but treat the shape as unverified:', rawJson(parsed.raw));
+    lines.push(`Schema drift: the ${SURFACE_LABEL[kind]} returned a body this plugin does not fully understand.`, 'The platform is ahead of (or behind) this plugin version — update it with `/plugin update axtar`.', '', 'What did not line up:', ...parsed.issues.map((issue) => `- ${issue}`), '', 'What came back, verbatim — read it, but treat the shape as unverified:', rawJson(parsed.raw));
     return lines.join('\n');
 }
 // --- refusals and fail-open --------------------------------------------------

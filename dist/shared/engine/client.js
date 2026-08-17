@@ -1,9 +1,12 @@
 /**
  * The HTTP seam to the platform's `/mentor` sub-app.
  *
- * One method — a typed JSON POST — because the plugin makes exactly two calls
- * (`/checks/diff`, `/checks/spec`, spec §9) and both are the same shape: send a
- * producer-built packet, parse a judgment. The response parser is passed in by
+ * Two methods, one per direction the plugin actually needs. A typed JSON POST
+ * carries the two checks (`/checks/diff`, `/checks/spec`, spec §9) — both the
+ * same shape: send a producer-built packet, parse a judgment. A typed JSON GET
+ * carries the one read (`/projects`), which `axtar_projects` lists so a
+ * developer can *author* the binding; the platform stores no selection, so
+ * there is nothing here that writes one. The response parser is passed in by
  * the caller (a zod schema), which keeps the wire contract in one place:
  * **zod is the single source of truth for the wire**, so a field the platform
  * renamed fails here, loudly, instead of arriving as `undefined` three layers
@@ -17,14 +20,19 @@
  * belong to this key, 409 is an org with no usable LLM provider.
  */
 export function createEngineClient(config) {
+    const authorization = `Bearer ${config.apiKey}`;
     return {
         post: (path, body, schema) => request(config, path, schema, {
             method: 'POST',
             headers: {
                 'content-type': 'application/json',
-                authorization: `Bearer ${config.apiKey}`,
+                authorization,
             },
             body: JSON.stringify(body),
+        }),
+        get: (path, schema) => request(config, path, schema, {
+            method: 'GET',
+            headers: { authorization },
         }),
     };
 }

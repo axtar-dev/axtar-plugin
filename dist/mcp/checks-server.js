@@ -1,7 +1,8 @@
 /**
  * The Axtar checks MCP server — the plugin's only runtime surface (spec §15).
  *
- * Two tools, the two calls of §9:
+ * Three tools: the two calls of §9, plus the one read that makes them
+ * bindable.
  *
  * - **`axtar_check_diff`** — the finished change. The agent passes no diff and
  *   no file contents: this server is the local *packet producer*
@@ -10,11 +11,18 @@
  * - **`axtar_check_spec`** — the plan, before any code exists. Exactly one of
  *   `spec` or `spec_path`; a path is **read here**, so an agent never pastes a
  *   file it already has on disk into a tool call.
+ * - **`axtar_projects`** — which projects exist, which one governs this repo,
+ *   and the `.axtar/config.yml` to write to change that. It needs the env vars
+ *   but **not** a binding: an unbound repo is precisely where it is asked. It
+ *   is a *read*, never a selection — the platform stores no per-repo choice,
+ *   and this server writes no file; §6's committed config is the only binding
+ *   mechanism, so "switching project" is always an edit somebody commits.
  *
- * Both post to the platform's `/mentor` sub-app with `AXTAR_API_KEY`, against
- * the project named by `.axtar/config.yml` at the repo root. Unconfigured or
- * unbound, they **refuse with setup instructions** rather than check against
- * nothing — and the refusal says, in as many words, that it is not a verdict.
+ * All three call the platform's `/mentor` sub-app with `AXTAR_API_KEY`; the two
+ * checks post against the project named by `.axtar/config.yml` at the repo root.
+ * Unconfigured or unbound, they **refuse with setup instructions** rather than
+ * check against nothing — and the refusal says, in as many words, that it is not
+ * a verdict.
  *
  * **This surface fails open** (§12). Engine down, timeout, 500, a body the wire
  * schemas cannot parse — every one comes back as text saying no verdict exists
@@ -30,12 +38,12 @@ import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
 import { createEngineClient } from '../shared/engine/client.js';
-import { loadEngineConfig, setupInstructions } from '../shared/engine/config.js';
+import { ENGINE_URL_ENV, loadEngineConfig, setupInstructions } from '../shared/engine/config.js';
 import { log } from '../shared/log.js';
 import { producePacket } from '../shared/producer.js';
 import { bindingInstructions, loadRepoBinding } from '../shared/project/config.js';
-import { renderDiffResponse, renderFailOpen, renderRefusal, renderSchemaDrift, renderSpecResponse, } from '../shared/render.js';
-import { DIFF_CHECK_PATH, DiffCheckRequestSchema, SPEC_CHECK_PATH, SpecCheckRequestSchema, parseDiffCheckResponse, parseSpecCheckResponse, } from '../shared/wire/checks.js';
+import { renderDiffResponse, renderFailOpen, renderProjects, renderProjectsFailure, renderRefusal, renderSchemaDrift, renderSpecResponse, } from '../shared/render.js';
+import { DIFF_CHECK_PATH, DiffCheckRequestSchema, PROJECTS_PATH, SPEC_CHECK_PATH, SpecCheckRequestSchema, parseDiffCheckResponse, parseProjectListResponse, parseSpecCheckResponse, } from '../shared/wire/checks.js';
 export const SERVER_NAME = 'axtar';
 export const SERVER_VERSION = '0.1.0';
 // --- the tool arguments ------------------------------------------------------
@@ -100,6 +108,16 @@ export const CheckSpecArgsSchema = z
         });
     }
 });
+/**
+ * `axtar_projects` takes nothing.
+ *
+ * The shape is empty and the schema is `.strict()` on purpose: there is no
+ * `project` argument to pass, because listing is not selecting. An agent that
+ * invents one gets told so instead of having it silently dropped and reading
+ * the answer as a selection that happened.
+ */
+export const ProjectsArgsShape = {};
+export const ProjectsArgsSchema = z.object(ProjectsArgsShape).strict();
 export function defaultDeps() {
     return {
         env: process.env,
@@ -121,8 +139,11 @@ function resolveSetup(deps) {
     const binding = loadRepoBinding(deps.cwd);
     const engine = loadEngineConfig(deps.env);
     const problems = [];
-    if (!binding.ok)
+    if (!binding.ok) {
         problems.push(bindingInstructions(binding));
+        problems.push('Call axtar_projects (or run /axtar:projects) to see which projects exist and get the ' +
+            'exact .axtar/config.yml to commit.');
+    }
     if (!engine.ok)
         problems.push(setupInstructions(engine.missing));
     if (!binding.ok || !engine.ok) {
@@ -144,6 +165,25 @@ function resolveSetup(deps) {
         },
     };
 }
+/**
+ * The engine connection alone — no binding required.
+ *
+ * `axtar_projects` is the tool you reach for *because* the repo is unbound, so
+ * demanding a binding first would make it useless exactly where it is needed.
+ * Its only hard requirement is the two env vars.
+ */
+function resolveConnection(deps) {
+    const engine = loadEngineConfig(deps.env);
+    if (!engine.ok) {
+        return {
+            ok: false,
+            message: renderRefusal('Axtar is not configured, so the project list could not be read', [
+                setupInstructions(engine.missing),
+            ]),
+        };
+    }
+    return { ok: true, client: deps.createClient(engine.config) };
+}
 /** What an HTTP status from `/mentor` usually means, in the caller's terms. */
 function failureHint(failure, projectId) {
     if (failure.reason !== 'http')
@@ -158,6 +198,26 @@ function failureHint(failure, projectId) {
             return 'the organization has no usable LLM provider configured — set one up in the portal.';
         case 422:
             return `the platform rejected the packet — 'project:' in .axtar/config.yml must be the project id the portal issued.`;
+        default:
+            return undefined;
+    }
+}
+/**
+ * The same statuses, read against `GET /projects` rather than a check.
+ *
+ * A 404 here is *not* a missing project — the route takes no id — so it almost
+ * always means `AXTAR_ENGINE_URL` is missing its `/mentor` suffix, which is the
+ * opposite advice `failureHint` gives.
+ */
+function projectsFailureHint(failure) {
+    if (failure.reason !== 'http')
+        return undefined;
+    switch (failure.status) {
+        case 401:
+        case 403:
+            return `AXTAR_API_KEY was rejected — check the key in the portal's Settings → API keys.`;
+        case 404:
+            return `${ENGINE_URL_ENV} is probably missing its /mentor suffix — GET /projects takes no id, so a 404 is the URL, not the project.`;
         default:
             return undefined;
     }
@@ -315,6 +375,49 @@ export async function runCheckSpec(rawArgs, deps) {
     }
     return text(renderSpecResponse(result.value.value));
 }
+/**
+ * `axtar_projects` — what exists, what governs this repo, how to change it.
+ *
+ * Three things in one answer, because they are one question: the org's
+ * projects, the id `.axtar/config.yml` currently names (or the fact that no
+ * config exists here), and the file to write. Nothing is persisted anywhere —
+ * the tool reads, the human or the agent commits.
+ */
+export async function runProjects(rawArgs, deps) {
+    const args = ProjectsArgsSchema.safeParse(rawArgs ?? {});
+    if (!args.success)
+        return argumentRefusal('axtar_projects', args.error);
+    const connection = resolveConnection(deps);
+    if (!connection.ok)
+        return text(connection.message);
+    // The binding is read for context only: an unbound repo is a normal, expected
+    // state here, not a refusal.
+    const binding = loadRepoBinding(deps.cwd);
+    const boundProjectId = binding.ok ? binding.binding.projectId : null;
+    const configPath = binding.ok ? binding.binding.configPath : null;
+    const unboundReason = binding.ok ? null : bindingInstructions(binding);
+    log.info('listing projects', { bound: boundProjectId });
+    const result = await connection.client.get(PROJECTS_PATH, {
+        parse: parseProjectListResponse,
+    });
+    if (!result.ok) {
+        const reason = result.reason === 'http'
+            ? `HTTP ${result.status} — ${result.detail}`
+            : `${result.reason} — ${result.detail}`;
+        log.warn('projects listing failed open', { reason });
+        return text(renderProjectsFailure(reason, boundProjectId, projectsFailureHint(result)));
+    }
+    if (!result.value.ok) {
+        log.warn('projects response failed the wire schema', { issues: result.value.issues });
+        return text(renderSchemaDrift('projects', result.value));
+    }
+    return text(renderProjects({
+        projects: result.value.value,
+        boundProjectId,
+        configPath,
+        unboundReason,
+    }));
+}
 // --- registration ------------------------------------------------------------
 export const CHECK_DIFF_DESCRIPTION = [
     "Check the change you just made against the rules this repo's Axtar project enforces, and get",
@@ -344,6 +447,19 @@ export const CHECK_SPEC_DESCRIPTION = [
     'Surface the receipt block it returns (check_id, url, summary) verbatim in your summary to the',
     'developer — it is the evidence the plan was checked against the whole rule corpus.',
 ].join('\n');
+export const PROJECTS_DESCRIPTION = [
+    'List the Axtar projects this API key can see, say which one governs THIS repo, and give the',
+    'exact .axtar/config.yml to write to bind or switch it.',
+    '',
+    'Call it for any binding question: "which Axtar project is this repo on", "what projects do we',
+    'have", "switch this repo to another project", or after axtar_check_diff / axtar_check_spec',
+    'refused because the repo is unbound. It needs no binding itself — an unbound repo is exactly',
+    'where it is useful.',
+    '',
+    'It reads; it never selects. The committed .axtar/config.yml is the only binding mechanism and',
+    'the platform stores no per-repo choice, so changing project means editing that file and',
+    'committing it (push before running ingest). Take no argument — there is no project to pass.',
+].join('\n');
 /**
  * The last line of the fail-open guarantee (§12).
  *
@@ -360,6 +476,9 @@ async function guarded(what, run) {
     catch (err) {
         const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
         log.error('tool handler threw — failing open', { what, detail });
+        if (what === 'projects') {
+            return text(renderProjectsFailure(`the plugin hit an internal error (${detail})`, null, undefined));
+        }
         return text(renderFailOpen(what, `the plugin hit an internal error (${detail})`));
     }
 }
@@ -377,12 +496,18 @@ export function createServer(deps = defaultDeps()) {
         inputSchema: CheckSpecArgsShape,
         annotations: { readOnlyHint: true, openWorldHint: true },
     }, (args) => guarded('spec', () => runCheckSpec(args, deps)));
+    server.registerTool('axtar_projects', {
+        title: 'Axtar: projects and this repo’s binding',
+        description: PROJECTS_DESCRIPTION,
+        inputSchema: ProjectsArgsShape,
+        annotations: { readOnlyHint: true, openWorldHint: true },
+    }, (args) => guarded('projects', () => runProjects(args, deps)));
     return server;
 }
 export async function main() {
     const server = createServer();
     await server.connect(new StdioServerTransport());
-    log.info('axtar checks mcp server ready', { tools: 2 });
+    log.info('axtar checks mcp server ready', { tools: 3 });
 }
 // Start only when run as the entrypoint (not when imported by tests).
 if (process.argv[1] && process.argv[1].endsWith('checks-server.js')) {

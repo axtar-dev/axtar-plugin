@@ -1,10 +1,12 @@
 /**
- * The check wire contract — `POST /mentor/checks/{diff,spec}` (spec §9).
+ * The plugin wire contract — `POST /mentor/checks/{diff,spec}` (spec §9) and
+ * the read-only `GET /mentor/projects` behind `axtar_projects`.
  *
  * These schemas are a **mirror of the platform's `api/app/schemas/plugin/
- * check.py`**, field for field. That file is the authority; when it changes,
- * this one changes with it, and `test/fixtures/wire/*.json` are the pinned
- * examples that make a silent skew fail in this repo's CI.
+ * check.py`** (and `project.py`), field for field. Those files are the
+ * authority; when they change, this one changes with them, and
+ * `test/fixtures/wire/*.json` are the pinned examples that make a silent skew
+ * fail in this repo's CI.
  *
  * Two deliberately different strictnesses, because the two directions have
  * opposite failure costs:
@@ -29,6 +31,7 @@ import { z } from 'zod';
 /** Routes, relative to the `/mentor` base URL in `AXTAR_ENGINE_URL`. */
 export const DIFF_CHECK_PATH = '/checks/diff';
 export const SPEC_CHECK_PATH = '/checks/spec';
+export const PROJECTS_PATH = '/projects';
 
 // --- requests (producer → platform) -----------------------------------------
 
@@ -169,6 +172,33 @@ export const SpecCheckResponseSchema = z.object({
 });
 export type SpecCheckResponse = z.infer<typeof SpecCheckResponseSchema>;
 
+// --- projects (platform → plugin) -------------------------------------------
+
+/**
+ * One row of `GET /mentor/projects` — a mirror of the platform's
+ * `api/app/schemas/plugin/project.py::ProjectSummary`.
+ *
+ * Read-only, and deliberately so: listing the org's projects is *not* a
+ * selection. The committed `.axtar/config.yml` remains the only binding
+ * mechanism (§6), and the platform keeps no per-repo selection record — which
+ * is why nothing in this contract has a write direction.
+ *
+ * `id` stays a plain string rather than a UUID: the config carries whatever the
+ * portal issued, and rejecting a row over an id format would hide a project the
+ * developer can plainly see in the portal. `repo_full_name` is `"owner/repo"`
+ * when the platform could parse it at project creation, else null.
+ */
+export const ProjectSummarySchema = z.object({
+  id: z.string(),
+  name: z.string(),
+  repo_full_name: z.string().nullable(),
+  rule_count: z.number().int(),
+});
+export type ProjectSummary = z.infer<typeof ProjectSummarySchema>;
+
+export const ProjectListSchema = z.array(ProjectSummarySchema);
+export type ProjectList = z.infer<typeof ProjectListSchema>;
+
 // --- tolerant parsing --------------------------------------------------------
 
 /** A parsed response, or the raw body plus what did not line up. */
@@ -193,6 +223,10 @@ export function parseDiffCheckResponse(raw: unknown): WireParse<DiffCheckRespons
 
 export function parseSpecCheckResponse(raw: unknown): WireParse<SpecCheckResponse> {
   return tolerant(SpecCheckResponseSchema, raw);
+}
+
+export function parseProjectListResponse(raw: unknown): WireParse<ProjectList> {
+  return tolerant(ProjectListSchema, raw);
 }
 
 /**

@@ -31,6 +31,7 @@ project's rules govern this repo** (a committed file).
 
 ```
 /axtar:setup <engine-url> <axtar_pk_…-key>   # write the env vars, verify the connection
+/axtar:projects                              # list the projects, write .axtar/config.yml
 /axtar:status                                # which project governs this repo + connectivity
 ```
 
@@ -56,10 +57,16 @@ project: 3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55 # issued by the portal
 
 Only `project:` is read locally. The rest of the file (`knowledge:`) is the
 ingest contract and is parsed, strictly, by the platform. Without the file, both
-tools refuse and tell you to create the project in the portal — a check against
-no rules is worse than no check.
+check tools refuse and point at `axtar_projects` — a check against no rules is
+worse than no check.
 
-## The two tools
+## The tools
+
+| Tool | Needs a binding? | What it answers |
+| --- | --- | --- |
+| [`axtar_check_spec`](#axtar_check_spec-spec--spec_path-ref-) | yes | Before the code exists: what must the plan state, what does it conflict with, what does it leave unaddressed. |
+| [`axtar_check_diff`](#axtar_check_diff-base_ref-spec_path-ref-) | yes | When the change is done: which rules it breaches, which it brushes against, and the receipt. |
+| [`axtar_projects`](#axtar_projects) | **no** | Which projects exist, which one governs this repo, and the `.axtar/config.yml` to write to change that. |
 
 ### `axtar_check_spec({ spec | spec_path, ref? })`
 
@@ -129,6 +136,68 @@ current branch. Binary files are excluded from the upload, with a note; nothing
 else is trimmed locally — the platform owns the packet cap and names the rules it
 had to drop.
 
+### `axtar_projects()`
+
+Takes no arguments, because listing is not selecting. Returns every project the
+API key can see, marks the one this repo is bound to, and ends with the exact
+config to write:
+
+```
+> which Axtar project is this repo on?
+  axtar_projects()
+
+This repo is bound to project 3f6a2c18-… ("Refunds Service"), per /repo/.axtar/config.yml.
+
+PROJECTS (2) — every project this API key can see:
+1. Refunds Service   ← this repo is bound to this project
+   id:     3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55
+   rules:  212 in the pool
+   repo:   acme/refunds
+2. Payments Platform
+   id:     9c4b7d21-3e88-4a10-b7f6-2c5e1a90d773
+   rules:  41 in the pool
+   repo:   (none linked)
+
+HOW TO BIND OR SWITCH — .axtar/config.yml at the repo root is the only binding
+mechanism. There is no server-side selection: to change project, change this file.
+…
+```
+
+It is the one tool that needs **no binding** — an unbound repo is exactly where
+it gets called, so it only refuses when the env vars are missing. In a repo with
+no config it leads with how to bind, then lists.
+
+## Multiple projects
+
+An organization usually has more than one project, and a project's rule pool is
+what a check is measured against — so "which project governs this repo" is a
+question with real consequences. The answer is always the same file:
+
+```
+which projects exist?   → axtar_projects (or /axtar:projects)
+which one governs this? → the top-level project: in .axtar/config.yml
+how do I switch?        → edit that file, commit it, push it
+```
+
+**There is no selection state anywhere.** The platform keeps no per-repo record,
+and the plugin writes no file of its own: the binding is a committed artifact so
+it travels with the repo and is the same for everyone who clones it. Which is
+why "switch project" is a code change, reviewable like any other, and why an
+uncommitted config binds nobody but you — and an unpushed one is invisible to
+ingest, which reads the committed file from the remote.
+
+`/axtar:projects` is the guided path: it lists the projects, asks which one
+should govern the repo, and writes the config for you in one of the three shapes
+§6 allows —
+
+- **binding-only** — `version:` + `project:`, nothing else. Checks run against
+  the project's rules; ingest reads nothing from this repo.
+- **docs-only** — plus a `knowledge.docs:` list of `- path: <glob>` entries; a
+  doc marked `kind: reference` is context only and never becomes a rule.
+- **docs+code** — plus `knowledge.code:` with `enabled: true` and
+  `include:`/`exclude:` globs, so conventions nobody wrote down are induced from
+  the source.
+
 ## The receipt
 
 Every response leads with the same three lines, preformatted by the platform:
@@ -170,8 +239,11 @@ npm run validate:manifests
   exception that stalls a developer mid-flow. (CI, the other surface, fails
   closed; same core, inverted defaults.)
 - **zod is the single source of truth for the wire** — `src/shared/wire/checks.ts`
-  mirrors the platform's `api/app/schemas/plugin/check.py`; the fixtures in
-  `test/fixtures/wire/` pin the shape.
+  mirrors the platform's `api/app/schemas/plugin/check.py` and `project.py`; the
+  fixtures in `test/fixtures/wire/` pin the shape.
+- **Nothing selects a project** — the plugin reads `.axtar/config.yml` and never
+  writes it; `axtar_projects` lists and instructs, and the platform stores no
+  per-repo choice.
 - **`strict` TypeScript**, including `noUncheckedIndexedAccess` and
   `exactOptionalPropertyTypes`.
 

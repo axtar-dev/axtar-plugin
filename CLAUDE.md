@@ -1,9 +1,10 @@
 # CLAUDE.md — working in the Axtar plugin
 
-This repo is the **Axtar Claude Code plugin**: one stdio MCP server exposing two
-tools — `axtar_check_spec` (before the code exists) and `axtar_check_diff` (when
-the change is done) — against the rules the repo's Axtar project enforces. Read
-`README.md` first.
+This repo is the **Axtar Claude Code plugin**: one stdio MCP server exposing
+three tools — `axtar_check_spec` (before the code exists), `axtar_check_diff`
+(when the change is done), and `axtar_projects` (which project governs this repo,
+and the config to write to change that) — against the rules the repo's Axtar
+project enforces. Read `README.md` first.
 
 The design authority is the redesign spec in the sibling platform repo:
 `docs/superpowers/specs/2026-08-11-axtar-redesign-design.md` — §9 (the two
@@ -53,8 +54,12 @@ uncommitted `dist/` would simply be absent at runtime. Always rebuild and commit
    unchecked file.
 5. **`.axtar/config.yml` is the only binding.** The plugin reads `project:` from
    it and writes nothing. No local selection state, no chooser; unbound, the
-   tools refuse with setup instructions rather than checking against nothing.
-   The rest of the file is the platform's to validate.
+   check tools refuse with setup instructions rather than checking against
+   nothing. The rest of the file is the platform's to validate.
+   `axtar_projects` and `/axtar:projects` are the *authoring* path, not a
+   selector: the tool lists what exists and hands back the exact file to write,
+   and the command has the agent edit and commit it. Nothing in `src/` may ever
+   write that file, and the platform stores no per-repo choice to write to.
 6. **Named exports only.** Default exports are an eslint error.
 7. **`strict` TypeScript**, including `noUncheckedIndexedAccess` and
    `exactOptionalPropertyTypes`. Omit absent optional fields rather than passing
@@ -63,15 +68,16 @@ uncommitted `dist/` would simply be absent at runtime. Always rebuild and commit
 ## Layout
 
 - `src/mcp/checks-server.ts` — the MCP server (the only runtime surface): the
-  two tools, their argument schemas, the refusals and the fail-open paths.
+  three tools, their argument schemas, the refusals and the fail-open paths.
 - `src/shared/producer.ts` — the local packet producer: base-ref ladder, `git
   diff`, changed + untracked files read whole. All git through `execFile`.
 - `src/shared/wire/checks.ts` — zod mirrors of the platform's
-  `api/app/schemas/plugin/check.py`; parsing is tolerant and never throws.
+  `api/app/schemas/plugin/check.py` and `project.py`; parsing is tolerant and
+  never throws.
 - `src/shared/render.ts` — what the agent reads: the §10 receipt block first,
   then findings; drift, refusals and fail-open text live here too.
 - `src/shared/engine/` — connection config (`AXTAR_ENGINE_URL`, `AXTAR_API_KEY`)
-  + the typed JSON POST client.
+  + the typed JSON client (POST for the checks, GET for `/projects`).
 - `src/shared/project/config.ts` — finds `.axtar/config.yml`, reads `project:`.
 - `src/shared/log.ts` — stderr logger.
 - `test/fixtures/wire/` — pinned response bodies; they track the platform's

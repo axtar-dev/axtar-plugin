@@ -11,8 +11,8 @@ Do this:
 1. Read `.axtar/config.yml` at the repo root and report its top-level `project:`
    value — that is the project whose rules every check runs against. If the file
    is absent, say so plainly: no project governs this repo, the checks will
-   refuse, and the fix is to create the project in the Axtar portal and commit
-   the config it generates (`/axtar:setup` walks through it).
+   refuse, and the fix is `/axtar:projects`, which lists the org's projects and
+   writes the config for the one the user picks.
 
 2. Check connectivity and auth with the configured credentials:
 

@@ -19,10 +19,12 @@ import type { EngineClient, EngineResult, ResponseParser } from '../../src/share
 import type { DiffPacket, ProduceOptions, ProducerOutcome } from '../../src/shared/producer.js';
 import {
   CHECK_DIFF_DESCRIPTION,
+  PROJECTS_DESCRIPTION,
   SERVER_NAME,
   createServer,
   runCheckDiff,
   runCheckSpec,
+  runProjects,
 } from '../../src/mcp/checks-server.js';
 import type { ServerDeps } from '../../src/mcp/checks-server.js';
 
@@ -78,6 +80,14 @@ const SPEC_BODY = {
   receipt: '88 considered · 88 checked · 0 dropped · 1 must-state · 0 conflicts',
 };
 
+const OTHER_PROJECT = '9c4b7d21-3e88-4a10-b7f6-2c5e1a90d773';
+
+/** `GET /mentor/projects` — the shape of `api/app/schemas/plugin/project.py`. */
+const PROJECTS_BODY = [
+  { id: PROJECT, name: 'Refunds Service', repo_full_name: 'acme/refunds', rule_count: 212 },
+  { id: OTHER_PROJECT, name: 'Payments Platform', repo_full_name: null, rule_count: 41 },
+];
+
 const PACKET: DiffPacket = {
   repoRoot: '/repo',
   baseRef: 'abc1234def5678',
@@ -96,12 +106,17 @@ interface Posted {
 
 let repoDir: string;
 let posted: Posted[];
+let fetched: string[];
 
-/** A client that answers every POST with `body`, through the caller's parser. */
+/** A client that answers every POST and GET with `body`, through the caller's parser. */
 function clientReturning(body: unknown): EngineClient {
   return {
     post: async <T>(path: string, requestBody: unknown, schema: ResponseParser<T>) => {
       posted.push({ path, body: requestBody });
+      return { ok: true, value: schema.parse(body) } satisfies EngineResult<T>;
+    },
+    get: async <T>(path: string, schema: ResponseParser<T>) => {
+      fetched.push(path);
       return { ok: true, value: schema.parse(body) } satisfies EngineResult<T>;
     },
   };
@@ -111,6 +126,10 @@ function clientFailing(failure: Exclude<EngineResult<never>, { ok: true }>): Eng
   return {
     post: async (path, requestBody) => {
       posted.push({ path, body: requestBody });
+      return failure;
+    },
+    get: async (path) => {
+      fetched.push(path);
       return failure;
     },
   };
@@ -144,6 +163,7 @@ function writeConfig(projectId: string): void {
 beforeEach(() => {
   repoDir = realpathSync(mkdtempSync(join(tmpdir(), 'axtar-server-')));
   posted = [];
+  fetched = [];
   writeConfig(PROJECT);
 });
 
@@ -391,6 +411,142 @@ describe('axtar_check_spec', () => {
   });
 });
 
+describe('axtar_projects — listing is not selecting', () => {
+  function projectsDeps(over: Partial<ServerDeps> = {}): ServerDeps {
+    return deps({ createClient: () => clientReturning(PROJECTS_BODY), ...over });
+  }
+
+  it('lists every project and marks the one this repo is bound to', async () => {
+    const body = bodyOf(await runProjects({}, projectsDeps()));
+
+    expect(fetched).toEqual(['/projects']);
+    expect(body).toContain('PROJECTS (2)');
+    expect(body).toContain('Refunds Service   ← this repo is bound to this project');
+    expect(body).toContain('212 in the pool');
+    expect(body).toContain('acme/refunds');
+    expect(body).toContain('Payments Platform');
+    expect(body).toContain('(none linked)');
+    expect(body).not.toContain('Payments Platform   ←');
+  });
+
+  it('names the bound project and the config it came from', async () => {
+    const body = bodyOf(await runProjects({}, projectsDeps()));
+
+    expect(body).toContain(`This repo is bound to project ${PROJECT} ("Refunds Service")`);
+    expect(body).toContain(join(repoDir, '.axtar', 'config.yml'));
+  });
+
+  it('ends with the snippet for the bound project, the commit rule and the three shapes', async () => {
+    const body = bodyOf(await runProjects({}, projectsDeps()));
+
+    expect(body).toContain('.axtar/config.yml at the repo root is the only binding');
+    expect(body).toContain(`version: 1\nproject: ${PROJECT}`);
+    expect(body).toContain('Commit it');
+    expect(body).toContain('before running ingest');
+    expect(body).toContain('binding-only');
+    expect(body).toContain('docs-only');
+    expect(body).toContain('docs+code');
+    expect(body).toContain('kind: reference');
+    expect(body).toContain('enabled: true');
+  });
+
+  it('works in an unbound repo and leads with how to bind it', async () => {
+    rmSync(join(repoDir, '.axtar'), { recursive: true, force: true });
+
+    const body = bodyOf(await runProjects({}, projectsDeps()));
+    const lines = body.split('\n');
+
+    expect(lines[0]).toBe('This repo is bound to no Axtar project.');
+    expect(body).toContain('.axtar/config.yml');
+    expect(body).toContain('refuse here');
+    // Still lists everything, and offers a real id to bind to.
+    expect(body).toContain('PROJECTS (2)');
+    expect(body).toContain(`version: 1\nproject: ${PROJECT}`);
+    expect(body).not.toContain('← this repo is bound to this project');
+    expect(fetched).toEqual(['/projects']);
+  });
+
+  it('warns when the config names a project this key cannot see', async () => {
+    writeConfig('4b8e0d55-1c2f-4a77-9e31-6f0c8b2a4d19');
+
+    const body = bodyOf(await runProjects({}, projectsDeps()));
+
+    expect(body).toContain('That id is NOT in the list below');
+    expect(body).toContain('PROJECTS (2)');
+  });
+
+  it('says so when the org has no projects at all', async () => {
+    const body = bodyOf(
+      await runProjects({}, projectsDeps({ createClient: () => clientReturning([]) })),
+    );
+
+    expect(body).toContain('This API key can see no projects');
+    expect(body).toContain('<project id from the portal>');
+  });
+
+  it('refuses without the connection env vars, and never calls the platform', async () => {
+    const body = bodyOf(await runProjects({}, projectsDeps({ env: {} })));
+
+    expect(body).toContain('AXTAR_ENGINE_URL');
+    expect(body).toContain('AXTAR_API_KEY');
+    expect(body).toContain('/axtar:setup');
+    expect(fetched).toEqual([]);
+  });
+
+  it('fails open when the platform cannot be reached, keeping the how-to-bind footer', async () => {
+    const body = bodyOf(
+      await runProjects(
+        {},
+        projectsDeps({
+          createClient: () =>
+            clientFailing({ ok: false, reason: 'http', status: 500, detail: 'boom' }),
+        }),
+      ),
+    );
+
+    expect(body).toContain('could not list your projects');
+    expect(body).toContain('HTTP 500 — boom');
+    expect(body).toContain(`This repo still names project ${PROJECT}`);
+    expect(body).toContain(`version: 1\nproject: ${PROJECT}`);
+  });
+
+  it('blames the URL, not the project, on a 404 from /projects', async () => {
+    const body = bodyOf(
+      await runProjects(
+        {},
+        projectsDeps({
+          createClient: () =>
+            clientFailing({ ok: false, reason: 'http', status: 404, detail: 'Not Found' }),
+        }),
+      ),
+    );
+
+    expect(body).toContain('missing its /mentor suffix');
+  });
+
+  it('degrades a drifted body instead of inventing a project list', async () => {
+    const body = bodyOf(
+      await runProjects(
+        {},
+        projectsDeps({
+          createClient: () => clientReturning([{ id: PROJECT, rule_count: 'many' }]),
+        }),
+      ),
+    );
+
+    expect(body).toContain('Schema drift');
+    expect(body).toContain('projects listing');
+    expect(body).toContain('/plugin update axtar');
+  });
+
+  it('rejects an argument, because there is no project to pass', async () => {
+    const body = bodyOf(await runProjects({ project: OTHER_PROJECT }, projectsDeps()));
+
+    expect(body).toContain('arguments it cannot use');
+    expect(fetched).toEqual([]);
+  });
+});
+
 describe('fail open (§12)', () => {
   it('returns text, not an exception, on a 500', async () => {
     const body = bodyOf(
@@ -490,7 +646,7 @@ describe('schema drift', () => {
 });
 
 describe('the server itself', () => {
-  it('registers both tools with descriptions that carry the receipt instruction', async () => {
+  it('registers the three tools, the checks carrying the receipt instruction', async () => {
     const server = createServer(deps());
     const client = new Client({ name: 'test', version: '0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -501,11 +657,41 @@ describe('the server itself', () => {
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
       'axtar_check_diff',
       'axtar_check_spec',
+      'axtar_projects',
     ]);
-    for (const tool of listed.tools) {
+    for (const tool of listed.tools.filter((t) => t.name.startsWith('axtar_check_'))) {
       expect(tool.description).toContain('receipt block');
       expect(tool.inputSchema.properties).toHaveProperty('ref');
     }
+    await client.close();
+    await server.close();
+  });
+
+  it('describes axtar_projects as the binding tool, and gives it no arguments', async () => {
+    const server = createServer(deps());
+    const client = new Client({ name: 'test', version: '0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const projects = (await client.listTools()).tools.find((t) => t.name === 'axtar_projects');
+
+    expect(projects?.description).toContain('.axtar/config.yml');
+    expect(projects?.description).toContain('It reads; it never selects.');
+    expect(projects?.inputSchema.properties ?? {}).toEqual({});
+    await client.close();
+    await server.close();
+  });
+
+  it('runs axtar_projects end to end over the transport', async () => {
+    const server = createServer(deps({ createClient: () => clientReturning(PROJECTS_BODY) }));
+    const client = new Client({ name: 'test', version: '0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const result = await client.callTool({ name: 'axtar_projects', arguments: {} });
+
+    expect(result.isError).toBeFalsy();
+    expect(JSON.stringify(result.content)).toContain('Refunds Service');
     await client.close();
     await server.close();
   });
@@ -547,5 +733,6 @@ describe('the server itself', () => {
   it('is the server the manifests point at', () => {
     expect(SERVER_NAME).toBe('axtar');
     expect(CHECK_DIFF_DESCRIPTION).toContain('Pass NO diff and NO file contents');
+    expect(PROJECTS_DESCRIPTION).toContain('It needs no binding itself');
   });
 });

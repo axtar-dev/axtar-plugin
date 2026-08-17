@@ -56,10 +56,9 @@ project: prj_8f3a2c # issued by the portal when you create the project
 ```
 
 Read the file if it exists and report which project it binds to. If it is
-absent, tell the user to create (or open) the project in the Axtar portal and
-commit the config file the portal generates — the portal issues the project id
-and builds the starter config from the repo's real layout, so do **not**
-hand-write one or invent an id.
+absent, point the user at `/axtar:projects`, which lists the org's projects and
+writes the config for the one they pick. The portal issues the project id, so
+never invent one — and the file only counts once it is committed.
 
 ## 4. Report
 

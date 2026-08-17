@@ -111,6 +111,44 @@ describe('engine client', () => {
     expect(result).toEqual({ ok: false, reason: 'network', detail: 'ECONNREFUSED' });
   });
 
+  it('gets JSON from baseUrl + path with the bearer key and no body', async () => {
+    const seen = stubFetch(
+      async () =>
+        new Response(JSON.stringify([{ verdict: 'ignored' }]), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+
+    const result = await createEngineClient(config).get('/projects', z.array(Verdict));
+
+    expect(result).toEqual({ ok: true, value: [{ verdict: 'ignored' }] });
+    const call = seen.calls[0];
+    expect(call?.url).toBe('https://app.axtar.dev/mentor/projects');
+    expect(call?.init.method).toBe('GET');
+    expect(call?.init.headers).toEqual({ authorization: 'Bearer axtar_pk_test' });
+    expect(call?.init.body).toBeUndefined();
+  });
+
+  it('fails open on a GET exactly as it does on a POST', async () => {
+    stubFetch(
+      async () =>
+        new Response(JSON.stringify({ detail: 'invalid api key' }), {
+          status: 401,
+          headers: { 'content-type': 'application/json' },
+        }),
+    );
+
+    const result = await createEngineClient(config).get('/projects', z.array(Verdict));
+
+    expect(result).toEqual({
+      ok: false,
+      reason: 'http',
+      status: 401,
+      detail: 'invalid api key',
+    });
+  });
+
   it('aborts and reports a timeout once the budget is spent', async () => {
     stubFetch(
       (_url, init) =>

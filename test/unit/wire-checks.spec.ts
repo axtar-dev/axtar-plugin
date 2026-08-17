@@ -18,8 +18,10 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DiffCheckRequestSchema,
+  PROJECTS_PATH,
   SpecCheckRequestSchema,
   parseDiffCheckResponse,
+  parseProjectListResponse,
   parseSpecCheckResponse,
   salvageReceipt,
 } from '../../src/shared/wire/checks.js';
@@ -28,6 +30,10 @@ const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'fixture
 
 function fixture(name: string): Record<string, unknown> {
   return JSON.parse(readFileSync(resolve(FIXTURES, name), 'utf-8')) as Record<string, unknown>;
+}
+
+function listFixture(name: string): Record<string, unknown>[] {
+  return JSON.parse(readFileSync(resolve(FIXTURES, name), 'utf-8')) as Record<string, unknown>[];
 }
 
 describe('diff check response', () => {
@@ -127,6 +133,73 @@ describe('spec check response', () => {
     expect(parsed.ok).toBe(false);
     if (parsed.ok) throw new Error('expected drift');
     expect(parsed.issues.join('\n')).toContain('must_state.0.line_for_the_spec');
+  });
+});
+
+describe('project list response', () => {
+  it('is read from GET /projects', () => {
+    expect(PROJECTS_PATH).toBe('/projects');
+  });
+
+  it('round-trips the platform shape (api/app/schemas/plugin/project.py)', () => {
+    const parsed = parseProjectListResponse(listFixture('projects-response.json'));
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+    expect(parsed.value).toHaveLength(2);
+    expect(parsed.value[0]).toEqual({
+      id: '3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55',
+      name: 'Refunds Service',
+      repo_full_name: 'acme/refunds',
+      rule_count: 212,
+    });
+    // The platform sends null when it could not parse "owner/repo".
+    expect(parsed.value[1]?.repo_full_name).toBeNull();
+    expect(parsed.value[1]?.rule_count).toBe(0);
+  });
+
+  it('accepts an empty list — an org with no projects yet', () => {
+    const parsed = parseProjectListResponse([]);
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected the empty list to parse');
+    expect(parsed.value).toEqual([]);
+  });
+
+  it('ignores a field the platform added', () => {
+    const body = listFixture('projects-response.json');
+    body[0]!['created_at'] = '2026-08-11T00:00:00Z';
+
+    expect(parseProjectListResponse(body).ok).toBe(true);
+  });
+
+  it('reports drift when a field is renamed away', () => {
+    const body = listFixture('projects-response.json');
+    delete body[0]!['rule_count'];
+
+    const parsed = parseProjectListResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('0.rule_count');
+    expect(parsed.raw).toBe(body);
+  });
+
+  it('reports drift on a type change, rather than coercing it', () => {
+    const body = listFixture('projects-response.json');
+    body[1]!['rule_count'] = '41';
+
+    const parsed = parseProjectListResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('1.rule_count');
+  });
+
+  it('never throws on a body that is not a list at all', () => {
+    expect(parseProjectListResponse({ detail: 'Not Found' }).ok).toBe(false);
+    expect(parseProjectListResponse('<html>gateway</html>').ok).toBe(false);
+    expect(parseProjectListResponse(null).ok).toBe(false);
   });
 });
 
