@@ -1,14 +1,15 @@
 # CLAUDE.md — working in the Axtar plugin
 
 This repo is the **Axtar Claude Code plugin**: one stdio MCP server exposing
-three tools — `axtar_check_spec` (before the code exists), `axtar_check_diff`
-(when the change is done), and `axtar_projects` (which project governs this repo,
-and the config to write to change that) — against the rules the repo's Axtar
-project enforces. Read `README.md` first.
+four tools — `axtar_check_spec` (before the code exists), `axtar_check_diff`
+(when the change is done), `axtar_check_scan` (existing code, as it stands), and
+`axtar_projects` (which project governs this repo, and the config to write to
+change that) — against the rules the repo's Axtar project enforces. Read
+`README.md` first.
 
 The design authority is the redesign spec in the sibling platform repo:
-`docs/superpowers/specs/2026-08-11-axtar-redesign-design.md` — §9 (the two
-calls), §10 (evidence/receipt), §12 (fail direction), §15 (this repo's role).
+`docs/superpowers/specs/2026-08-11-axtar-redesign-design.md` — §9 (the calls),
+§10 (evidence/receipt), §12 (fail direction), §15 (this repo's role).
 The wire contract it implements is `api/app/schemas/plugin/check.py` there.
 
 **The hard reset landed.** Hooks, host adapters, the gate CLI and the Mentor
@@ -68,9 +69,11 @@ uncommitted `dist/` would simply be absent at runtime. Always rebuild and commit
 ## Layout
 
 - `src/mcp/checks-server.ts` — the MCP server (the only runtime surface): the
-  three tools, their argument schemas, the refusals and the fail-open paths.
-- `src/shared/producer.ts` — the local packet producer: base-ref ladder, `git
-  diff`, changed + untracked files read whole. All git through `execFile`.
+  four tools, their argument schemas, the refusals and the fail-open paths.
+- `src/shared/producer.ts` — the local packet producers: the diff packet
+  (base-ref ladder, `git diff`, changed + untracked files read whole) and the
+  scan packet (`git ls-files` glob expansion, tracked + untracked-not-ignored).
+  All git through `execFile`.
 - `src/shared/wire/checks.ts` — zod mirrors of the platform's
   `api/app/schemas/plugin/check.py` and `project.py`; parsing is tolerant and
   never throws.

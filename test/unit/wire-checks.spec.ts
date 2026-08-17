@@ -3,11 +3,11 @@
  *
  * `test/fixtures/wire/*.json` are hand-copied response bodies in the shape
  * `api/app/schemas/plugin/check.py` declares in the platform repo. **They must
- * track that file**: when the platform's `DiffCheckResponse` / `SpecCheckResponse`
- * (or the `FindingOut` / `MustStateOut` / `ConflictOut` / `UnaddressedOut` /
- * `DroppedRuleOut` members) gain, lose or rename a field, update the fixtures
- * and the zod schemas in the same change — a green test here against a stale
- * fixture is exactly the silent skew this file exists to prevent.
+ * track that file**: when the platform's `DiffCheckResponse` / `ScanCheckResponse`
+ * / `SpecCheckResponse` (or the `FindingOut` / `MustStateOut` / `ConflictOut` /
+ * `UnaddressedOut` / `DroppedRuleOut` members) gain, lose or rename a field,
+ * update the fixtures and the zod schemas in the same change — a green test here
+ * against a stale fixture is exactly the silent skew this file exists to prevent.
  */
 
 import { readFileSync } from 'node:fs';
@@ -19,9 +19,12 @@ import { describe, expect, it } from 'vitest';
 import {
   DiffCheckRequestSchema,
   PROJECTS_PATH,
+  SCAN_CHECK_PATH,
+  ScanCheckRequestSchema,
   SpecCheckRequestSchema,
   parseDiffCheckResponse,
   parseProjectListResponse,
+  parseScanCheckResponse,
   parseSpecCheckResponse,
   salvageReceipt,
 } from '../../src/shared/wire/checks.js';
@@ -105,6 +108,71 @@ describe('diff check response', () => {
   it('never throws on a body that is not an object at all', () => {
     expect(parseDiffCheckResponse('<html>gateway</html>').ok).toBe(false);
     expect(parseDiffCheckResponse(null).ok).toBe(false);
+  });
+});
+
+describe('scan check response', () => {
+  it('is posted to /checks/scan — its own route, not a diff with an empty base', () => {
+    expect(SCAN_CHECK_PATH).toBe('/checks/scan');
+  });
+
+  it('round-trips the platform shape (api/app/schemas/plugin/check.py)', () => {
+    const parsed = parseScanCheckResponse(fixture('scan-response.json'));
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+    expect(parsed.value.verdict).toBe('breaches');
+    expect(parsed.value.considered).toBe(212);
+    expect(parsed.value.checked).toBe(210);
+    expect(parsed.value.dropped).toEqual([
+      { rule_id: 'AXT-0013', reason: 'packet_cap' },
+      { rule_id: 'AXT-0014', reason: 'timeout' },
+    ]);
+    expect(parsed.value.receipt).toContain('212 considered');
+
+    const breach = parsed.value.breaches[0];
+    expect(breach?.rule_id).toBe('AXT-0011');
+    expect(breach?.rule_version).toBe(2);
+    expect(breach?.defended).toBe(true);
+    expect(breach?.source).toMatchObject({ kind: 'stated', ref: 'docs/money.md' });
+
+    const advisory = parsed.value.advisories[0];
+    expect(advisory?.line).toBeNull();
+    expect(advisory?.source).toBeNull();
+    expect(advisory?.cache_sourced).toBe(true);
+  });
+
+  it('carries no unmet_spec — a scan has no spec to be unmet', () => {
+    const parsed = parseScanCheckResponse(fixture('scan-response.json'));
+
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+    expect(parsed.value).not.toHaveProperty('unmet_spec');
+  });
+
+  it('reports drift when the receipt is renamed away', () => {
+    const body = fixture('scan-response.json');
+    delete body['receipt'];
+
+    const parsed = parseScanCheckResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('receipt');
+    expect(parsed.raw).toBe(body);
+  });
+
+  it('never throws on a body that is not an object at all', () => {
+    expect(parseScanCheckResponse('<html>gateway</html>').ok).toBe(false);
+    expect(parseScanCheckResponse(null).ok).toBe(false);
+  });
+
+  it('salvages the receipt out of a drifted scan body', () => {
+    const body = { ...fixture('scan-response.json'), breaches: 'nope' };
+
+    expect(salvageReceipt(body)).toMatchObject({
+      check_id: '5a1c8e07-4d62-4b39-8f21-0c7e3b9a6d44',
+      receipt: '212 considered · 210 checked · 2 dropped · 1 breaches · 1 advisories',
+    });
   });
 });
 
@@ -234,6 +302,37 @@ describe('requests', () => {
       diff: '',
       base_ref: 'sha',
       files: [{ path: 'a', content: 'x', mode: '100644' }],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('accepts the packet the scan producer builds', () => {
+    const parsed = ScanCheckRequestSchema.safeParse({
+      project: '3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55',
+      files: [{ path: 'src/billing/invoice.ts', content: 'export const a = 1;\n' }],
+      paths_requested: ['src/billing/**'],
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it('refuses a scan of no files (the platform declares min_length=1)', () => {
+    const parsed = ScanCheckRequestSchema.safeParse({
+      project: 'p',
+      files: [],
+      paths_requested: ['src/**'],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('refuses the diff fields on a scan — there is no base to compare against', () => {
+    const parsed = ScanCheckRequestSchema.safeParse({
+      project: 'p',
+      files: [{ path: 'a', content: 'x\n' }],
+      paths_requested: [],
+      base_ref: 'sha',
     });
 
     expect(parsed.success).toBe(false);

@@ -1,13 +1,17 @@
 /**
  * The Axtar checks MCP server — the plugin's only runtime surface (spec §15).
  *
- * Three tools: the two calls of §9, plus the one read that makes them
+ * Four tools: the three calls of §9, plus the one read that makes them
  * bindable.
  *
  * - **`axtar_check_diff`** — the finished change. The agent passes no diff and
  *   no file contents: this server is the local *packet producer*
  *   (`shared/producer.ts`). It resolves `base_ref`, runs `git diff` against the
  *   working tree, reads the changed and untracked files whole, and uploads once.
+ * - **`axtar_check_scan`** — existing code, as it stands. Same producer, no
+ *   base ref: the agent names the files or globs, the server expands them
+ *   against the work tree (tracked plus untracked-but-not-ignored) and ships
+ *   them whole. It is the audit you reach for when there is no diff to judge.
  * - **`axtar_check_spec`** — the plan, before any code exists. Exactly one of
  *   `spec` or `spec_path`; a path is **read here**, so an agent never pastes a
  *   file it already has on disk into a tool call.
@@ -18,7 +22,7 @@
  *   and this server writes no file; §6's committed config is the only binding
  *   mechanism, so "switching project" is always an edit somebody commits.
  *
- * All three call the platform's `/mentor` sub-app with `AXTAR_API_KEY`; the two
+ * All four call the platform's `/mentor` sub-app with `AXTAR_API_KEY`; the three
  * checks post against the project named by `.axtar/config.yml` at the repo root.
  * Unconfigured or unbound, they **refuse with setup instructions** rather than
  * check against nothing — and the refusal says, in as many words, that it is not
@@ -46,8 +50,14 @@ import type { EngineClient, EngineFailure } from '../shared/engine/client.js';
 import type { EngineConfig } from '../shared/engine/config.js';
 import { ENGINE_URL_ENV, loadEngineConfig, setupInstructions } from '../shared/engine/config.js';
 import { log } from '../shared/log.js';
-import type { DiffPacket, ProduceOptions, ProducerOutcome } from '../shared/producer.js';
-import { producePacket } from '../shared/producer.js';
+import type {
+  DiffPacket,
+  ProduceOptions,
+  ProducerFailure,
+  ProducerOutcome,
+  ScanPacket,
+} from '../shared/producer.js';
+import { findRepoRoot, produceScanPacket, producePacket } from '../shared/producer.js';
 import { bindingInstructions, loadRepoBinding } from '../shared/project/config.js';
 import {
   renderDiffResponse,
@@ -55,18 +65,26 @@ import {
   renderProjects,
   renderProjectsFailure,
   renderRefusal,
+  renderScanResponse,
   renderSchemaDrift,
   renderSpecResponse,
 } from '../shared/render.js';
-import type { DiffCheckRequest, SpecCheckRequest } from '../shared/wire/checks.js';
+import type {
+  DiffCheckRequest,
+  ScanCheckRequest,
+  SpecCheckRequest,
+} from '../shared/wire/checks.js';
 import {
   DIFF_CHECK_PATH,
   DiffCheckRequestSchema,
   PROJECTS_PATH,
+  SCAN_CHECK_PATH,
   SPEC_CHECK_PATH,
+  ScanCheckRequestSchema,
   SpecCheckRequestSchema,
   parseDiffCheckResponse,
   parseProjectListResponse,
+  parseScanCheckResponse,
   parseSpecCheckResponse,
 } from '../shared/wire/checks.js';
 
@@ -107,6 +125,34 @@ export const CheckDiffArgsShape = {
     ),
 };
 export const CheckDiffArgsSchema = z.object(CheckDiffArgsShape).strict();
+
+/**
+ * `paths` is required and schema-enforced — an audit has to be *of* something.
+ *
+ * There is no "scan everything" default: the whole repo is not a review unit,
+ * it is a bill, and a caller who meant one feature area would get a packet the
+ * platform has to cap. `ref` has no default either (see the tool description).
+ */
+export const CheckScanArgsShape = {
+  paths: z
+    .array(z.string().min(1))
+    .min(1)
+    .describe(
+      'Required. The files or globs to audit, relative to the repo root — for example ' +
+        '["src/billing/**", "docs/refunds.md"]. The server expands them against the working ' +
+        'tree; do not paste file contents. Name a feature area, not the whole repo.',
+    ),
+  ref: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'Optional, and there is no default. Pass one only to thread repeated scans of the same ' +
+        'area together (a ticket id, an area name) — an audit is not a change, so it belongs to ' +
+        'no branch.',
+    ),
+};
+export const CheckScanArgsSchema = z.object(CheckScanArgsShape).strict();
 
 export const CheckSpecArgsShape = {
   spec: z
@@ -172,6 +218,16 @@ export interface ServerDeps {
   createClient: (config: EngineConfig) => EngineClient;
   /** Seam for tests: the local packet producer. */
   produce: (options: ProduceOptions) => Promise<ProducerOutcome<DiffPacket>>;
+  /**
+   * Seam for tests: the work-tree root a scan expands its globs from.
+   *
+   * A scan resolves the root itself rather than leaving it to the producer,
+   * because `git ls-files` prints paths relative to the *cwd*: expanding from
+   * anywhere but the root would ship `../../src/app.ts` as a path.
+   */
+  findRoot: (cwd: string) => Promise<ProducerOutcome<string>>;
+  /** Seam for tests: the local scan packet producer. */
+  produceScan: (repoRoot: string, paths: string[]) => Promise<ProducerOutcome<ScanPacket>>;
   /** Seam for tests: how `spec_path` is read. */
   readSpecFile: (absolutePath: string) => string;
 }
@@ -182,6 +238,8 @@ export function defaultDeps(): ServerDeps {
     cwd: process.cwd(),
     createClient: createEngineClient,
     produce: producePacket,
+    findRoot: findRepoRoot,
+    produceScan: produceScanPacket,
     readSpecFile: (absolutePath) => readFileSync(absolutePath, 'utf-8'),
   };
 }
@@ -301,7 +359,7 @@ function projectsFailureHint(failure: EngineFailure): string | undefined {
 }
 
 function failOpen(
-  what: 'diff' | 'spec',
+  what: 'diff' | 'scan' | 'spec',
   failure: EngineFailure,
   projectId: string,
 ): CallToolResult {
@@ -348,18 +406,19 @@ function readSpec(
 }
 
 /** Why the packet could not be built — local, actionable, and not a verdict. */
-function producerRefusal(
-  failure: Extract<ProducerOutcome<DiffPacket>, { ok: false }>,
-): CallToolResult {
+function producerRefusal(what: 'diff' | 'scan', failure: ProducerFailure): CallToolResult {
   const advice: Record<string, string> = {
     not_a_repo: 'Run the check from inside a git work tree.',
     no_commits: 'Make at least one commit, or pass base_ref explicitly.',
     unknown_base_ref: 'Fetch the ref first, or pass a base_ref this repo knows.',
     no_base_ref: 'Pass base_ref explicitly (for example the branch you will merge into).',
+    no_files_matched:
+      'Name paths or globs that exist in this repo — a scan needs at least one file to audit. ' +
+      'Ignored files (.gitignore) never match.',
     git_failed: 'Check that git works in this directory, then re-run.',
   };
   return text(
-    renderRefusal('Axtar could not assemble the diff packet', [
+    renderRefusal(`Axtar could not assemble the ${what} packet`, [
       `${failure.reason}: ${failure.detail}`,
       advice[failure.reason] ?? 'Re-run once git is usable here.',
     ]),
@@ -381,6 +440,20 @@ function packetNote(packet: DiffPacket): string {
   return `packet: ${parts.join(' · ')}`;
 }
 
+/** The same provenance line for an audit: what was asked for, what was sent. */
+function scanPacketNote(packet: ScanPacket): string {
+  const parts = [
+    `${packet.files.length} file(s) sent whole`,
+    `${packet.paths_requested.length} path(s) requested`,
+  ];
+  if (packet.skipped_binary.length > 0) {
+    parts.push(
+      `${packet.skipped_binary.length} binary skipped (${packet.skipped_binary.join(', ')})`,
+    );
+  }
+  return `packet: ${parts.join(' · ')}`;
+}
+
 // --- the tools ---------------------------------------------------------------
 
 export async function runCheckDiff(rawArgs: unknown, deps: ServerDeps): Promise<CallToolResult> {
@@ -391,7 +464,7 @@ export async function runCheckDiff(rawArgs: unknown, deps: ServerDeps): Promise<
   if (!setup.ok) return text(setup.message);
 
   const produced = await deps.produce({ cwd: deps.cwd, baseRef: args.data.base_ref });
-  if (!produced.ok) return producerRefusal(produced);
+  if (!produced.ok) return producerRefusal('diff', produced);
   const packet = produced.value;
 
   let spec: string | undefined;
@@ -433,6 +506,58 @@ export async function runCheckDiff(rawArgs: unknown, deps: ServerDeps): Promise<
     return text(`${renderSchemaDrift('diff', result.value)}\n\n${packetNote(packet)}`);
   }
   return text(`${renderDiffResponse(result.value.value)}\n\n${packetNote(packet)}`);
+}
+
+/**
+ * `axtar_check_scan` — a conformance audit of the files as they are.
+ *
+ * Same refusals and the same fail-open direction as the diff check; the two
+ * differences are both deliberate. The producer expands globs instead of
+ * resolving a base ref, and **`ref` is passed through verbatim with no default**:
+ * a diff belongs to the branch it is on, but an audit is not a change iterating,
+ * so defaulting it to the branch name would thread this scan into a story nobody
+ * wrote — "still outstanding since chk_7f2a91" about work that never happened.
+ */
+export async function runCheckScan(rawArgs: unknown, deps: ServerDeps): Promise<CallToolResult> {
+  const args = CheckScanArgsSchema.safeParse(rawArgs ?? {});
+  if (!args.success) return argumentRefusal('axtar_check_scan', args.error);
+
+  const setup = resolveSetup(deps);
+  if (!setup.ok) return text(setup.message);
+
+  const root = await deps.findRoot(deps.cwd);
+  if (!root.ok) return producerRefusal('scan', root);
+
+  const produced = await deps.produceScan(root.value, args.data.paths);
+  if (!produced.ok) return producerRefusal('scan', produced);
+  const packet = produced.value;
+
+  const body: ScanCheckRequest = {
+    project: setup.setup.projectId,
+    files: packet.files,
+    paths_requested: packet.paths_requested,
+    ...(args.data.ref === undefined ? {} : { ref: args.data.ref }),
+  };
+
+  const request = ScanCheckRequestSchema.safeParse(body);
+  if (!request.success) return argumentRefusal('the scan packet', request.error);
+
+  log.info('posting scan check', {
+    project: setup.setup.projectId,
+    files: packet.files.length,
+    paths: packet.paths_requested.length,
+    ref: args.data.ref ?? null,
+  });
+
+  const result = await setup.setup.client.post(SCAN_CHECK_PATH, request.data, {
+    parse: parseScanCheckResponse,
+  });
+  if (!result.ok) return failOpen('scan', result, setup.setup.projectId);
+  if (!result.value.ok) {
+    log.warn('scan response failed the wire schema', { issues: result.value.issues });
+    return text(`${renderSchemaDrift('scan', result.value)}\n\n${scanPacketNote(packet)}`);
+  }
+  return text(`${renderScanResponse(result.value.value)}\n\n${scanPacketNote(packet)}`);
 }
 
 export async function runCheckSpec(rawArgs: unknown, deps: ServerDeps): Promise<CallToolResult> {
@@ -546,6 +671,20 @@ export const CHECK_DIFF_DESCRIPTION = [
   'against the whole rule corpus, and the url is the immutable record of it.',
 ].join('\n');
 
+export const CHECK_SCAN_DESCRIPTION = [
+  "Check EXISTING code against the project's rules — a conformance audit of the files as they",
+  'are. Use axtar_check_diff for a change; use this when there is no diff. Scan a feature area',
+  '(globs), not the whole repo.',
+  '',
+  'Pass paths (files or globs, relative to the repo root); the server expands them against the',
+  'working tree and reads the files itself — pass NO file contents. Pass ref only to thread',
+  'repeated scans of the same area together; it has no default, because an audit is not a change.',
+  '',
+  'Surface the receipt block it returns (check_id, url, summary) verbatim in your summary to the',
+  'developer — it is the evidence these files were checked against the whole rule corpus, and the',
+  'url is the immutable record of it.',
+].join('\n');
+
 export const CHECK_SPEC_DESCRIPTION = [
   'Check a plan BEFORE writing code: returns the constraints the spec should state, the passages',
   'a rule forbids, the rules it leaves unaddressed, and a receipt of what was considered.',
@@ -585,7 +724,7 @@ export const PROJECTS_DESCRIPTION = [
  * text every other outage produces: no verdict, work may proceed.
  */
 async function guarded(
-  what: 'diff' | 'spec' | 'projects',
+  what: 'diff' | 'scan' | 'spec' | 'projects',
   run: () => Promise<CallToolResult>,
 ): Promise<CallToolResult> {
   try {
@@ -617,6 +756,17 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
   );
 
   server.registerTool(
+    'axtar_check_scan',
+    {
+      title: 'Axtar: audit existing code',
+      description: CHECK_SCAN_DESCRIPTION,
+      inputSchema: CheckScanArgsShape,
+      annotations: { readOnlyHint: true, openWorldHint: true },
+    },
+    (args) => guarded('scan', () => runCheckScan(args, deps)),
+  );
+
+  server.registerTool(
     'axtar_check_spec',
     {
       title: 'Axtar: check this spec',
@@ -644,7 +794,7 @@ export function createServer(deps: ServerDeps = defaultDeps()): McpServer {
 export async function main(): Promise<void> {
   const server = createServer();
   await server.connect(new StdioServerTransport());
-  log.info('axtar checks mcp server ready', { tools: 3 });
+  log.info('axtar checks mcp server ready', { tools: 4 });
 }
 
 // Start only when run as the entrypoint (not when imported by tests).

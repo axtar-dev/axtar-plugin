@@ -29,6 +29,7 @@ import type {
   Finding,
   MustState,
   ProjectSummary,
+  ScanCheckResponse,
   SpecCheckResponse,
   Unaddressed,
 } from './wire/checks.js';
@@ -46,6 +47,15 @@ export function receiptBlock(check: { check_id: string; url: string; receipt: st
 const SURFACE_IT =
   'Surface the three receipt lines above in your summary and in any PR description you write — ' +
   'they are the evidence this change was checked against the whole corpus.';
+
+/**
+ * The same instruction for an audit, which has no change and usually no PR:
+ * what the receipt proves is that *these files* were measured against the whole
+ * corpus, so the claim it licenses is about the code, not about a diff.
+ */
+const SURFACE_IT_SCAN =
+  'Surface the three receipt lines above in your summary — they are the evidence these files ' +
+  'were checked against the whole corpus.';
 
 // --- shared pieces -----------------------------------------------------------
 
@@ -127,6 +137,41 @@ export function renderDiffResponse(response: DiffCheckResponse): string {
     ...droppedSection(response.dropped),
     '',
     SURFACE_IT,
+  );
+  return lines.join('\n');
+}
+
+// --- scan --------------------------------------------------------------------
+
+/**
+ * The audit of existing files — the diff render's own sections, minus the one a
+ * scan can never have.
+ *
+ * `unmet_spec` is absent because the response has no such field: there is no
+ * spec to be unmet when nothing was proposed. The verdict carries a note that a
+ * scan gates nothing, because `breaches` on an audit means "the code already
+ * breaks these rules", which is a backlog, not a blocked change.
+ */
+export function renderScanResponse(response: ScanCheckResponse): string {
+  const lines = [
+    receiptBlock(response),
+    '',
+    `verdict:  ${response.verdict} (an audit of the files as they are — a scan gates nothing)`,
+  ];
+
+  if (response.breaches.length === 0 && response.advisories.length === 0) {
+    lines.push(
+      '',
+      'No breaches and no advisories — every rule that was checked held in these files.',
+    );
+  }
+
+  lines.push(
+    ...findingSection('BREACHES', response.breaches),
+    ...findingSection('ADVISORIES', response.advisories),
+    ...droppedSection(response.dropped),
+    '',
+    SURFACE_IT_SCAN,
   );
   return lines.join('\n');
 }
@@ -373,10 +418,11 @@ function rawJson(raw: unknown): string {
 }
 
 /** The wire surfaces a drifted body can arrive on, named as the agent reads them. */
-export type WireSurface = 'diff' | 'spec' | 'projects';
+export type WireSurface = 'diff' | 'scan' | 'spec' | 'projects';
 
 const SURFACE_LABEL: Record<WireSurface, string> = {
   diff: 'diff check',
+  scan: 'conformance scan',
   spec: 'spec check',
   projects: 'projects listing',
 };

@@ -9,6 +9,12 @@
  * would differ from the one CI's server-side producer builds from the same
  * commit, which is the fastest way to make the two surfaces disagree.
  *
+ * **Two packets, one discipline.** `producePacket` answers "what changed";
+ * `produceScanPacket` answers "what is in these files, right now" — the scan
+ * surface has no base and no diff, so its whole input is a set of globs expanded
+ * against the work tree. Both read the same way (whole files, lstat'd, binaries
+ * dropped) and both leave every size decision to the platform.
+ *
  * **The base-ref ladder**, in order, first rung that resolves wins:
  *
  * 1. the caller's explicit `base_ref` — used as given (two-dot: `git diff <ref>`);
@@ -319,6 +325,104 @@ export async function producePacket(options) {
             binarySkipped,
             untracked: synthesized,
         },
+    };
+}
+// --- the scan packet ---------------------------------------------------------
+/**
+ * `git ls-files` under one set of pathspecs, `-z` so a path with a space in it
+ * is a path and not two.
+ *
+ * The pathspecs go after `--` as separate argv entries, never interpolated into
+ * a string: `execFile` means a glob is expanded by git's own pathspec matcher
+ * and by no shell, so `src/*; rm -rf /` is a (fruitless) pathspec.
+ */
+async function listFiles(repoRoot, flags, globs) {
+    const out = await git(repoRoot, ['ls-files', ...flags, '-z', '--', ...globs]);
+    if (!out.ok)
+        return { ok: false, reason: 'git_failed', detail: out.detail };
+    return { ok: true, value: splitZ(out.stdout) };
+}
+/**
+ * Assemble the scan packet for `paths` in `repoRoot`. Never throws.
+ *
+ * **What a scan covers:** everything `git ls-files` reports under the given
+ * pathspecs (tracked), plus everything `git ls-files --others
+ * --exclude-standard` reports under the same ones (untracked but *not*
+ * ignored). A file the agent wrote ten seconds ago is the most audit-worthy
+ * thing under a glob and has never been `git add`ed; a `node_modules/` entry
+ * `.gitignore` already excludes is not the team's code and would burn the
+ * packet cap on somebody else's.
+ *
+ * **Zero matches is a refusal, not an empty packet.** The platform requires a
+ * non-empty `files` (a scan of nothing answered `clean` is the exact lie
+ * invariant #9 forbids), and a typo'd glob is the overwhelmingly likely cause —
+ * so the caller is told to fix the glob rather than handed a verdict.
+ *
+ * **The only thing dropped here is binary content.** There is no size decision
+ * in this function on purpose: the platform owns the packet cap and answers one
+ * it hit by naming the `dropped` rules.
+ */
+export async function produceScanPacket(repoRoot, paths) {
+    // git gets the trimmed globs; `paths_requested` keeps what the caller typed,
+    // because that is what the platform records the scan as having been asked for.
+    const globs = paths.map((glob) => glob.trim()).filter((glob) => glob.length > 0);
+    const requested = [...paths];
+    if (globs.length === 0) {
+        return {
+            ok: false,
+            reason: 'no_files_matched',
+            detail: 'no paths were given — a scan needs at least one file or glob to audit',
+        };
+    }
+    const tracked = await listFiles(repoRoot, [], globs);
+    if (!tracked.ok)
+        return tracked;
+    const untracked = await listFiles(repoRoot, ['--others', '--exclude-standard'], globs);
+    if (!untracked.ok)
+        return untracked;
+    const matched = [...new Set([...tracked.value, ...untracked.value])].sort();
+    if (matched.length === 0) {
+        return {
+            ok: false,
+            reason: 'no_files_matched',
+            detail: `no files matched — check the paths/globs (asked for: ${globs.join(', ')})`,
+        };
+    }
+    const files = [];
+    const skippedBinary = [];
+    for (const path of matched) {
+        const read = readWorkTreeFile(repoRoot, path);
+        if (read.skipped === 'binary') {
+            skippedBinary.push(path);
+            continue;
+        }
+        // A tracked path deleted from the tree, a directory, a symlink: nothing to
+        // audit, and nothing the platform could quote back as evidence.
+        if (read.content === null)
+            continue;
+        files.push({ path, content: read.content });
+    }
+    if (files.length === 0) {
+        return {
+            ok: false,
+            reason: 'no_files_matched',
+            detail: `no files matched — check the paths/globs: ${matched.length} path(s) matched but none ` +
+                `carried readable text (${skippedBinary.length} binary)`,
+        };
+    }
+    if (skippedBinary.length > 0) {
+        log.warn('binary files excluded from the scan packet', { paths: skippedBinary });
+    }
+    log.debug('scan packet assembled', {
+        repoRoot,
+        requested: requested.length,
+        matched: matched.length,
+        files: files.length,
+        binarySkipped: skippedBinary.length,
+    });
+    return {
+        ok: true,
+        value: { files, paths_requested: requested, skipped_binary: skippedBinary },
     };
 }
 //# sourceMappingURL=producer.js.map

@@ -1,6 +1,6 @@
 /**
- * The plugin wire contract — `POST /mentor/checks/{diff,spec}` (spec §9) and
- * the read-only `GET /mentor/projects` behind `axtar_projects`.
+ * The plugin wire contract — `POST /mentor/checks/{diff,spec,scan}` (spec §9)
+ * and the read-only `GET /mentor/projects` behind `axtar_projects`.
  *
  * These schemas are a **mirror of the platform's `api/app/schemas/plugin/
  * check.py`** (and `project.py`), field for field. Those files are the
@@ -19,7 +19,8 @@
  *   in the body. A field that was *renamed or dropped* still fails, which is the
  *   skew worth shouting about.
  *
- * And nothing here throws. `parseDiffCheckResponse` / `parseSpecCheckResponse`
+ * And nothing here throws. `parseDiffCheckResponse` / `parseScanCheckResponse` /
+ * `parseSpecCheckResponse`
  * return a discriminated result carrying the raw body, so a drifted response is
  * rendered as *degraded but shown* (§12's fail-open direction applied to the
  * parser): the developer sees what came back plus a warning, never a crash and
@@ -28,6 +29,7 @@
 import { z } from 'zod';
 /** Routes, relative to the `/mentor` base URL in `AXTAR_ENGINE_URL`. */
 export const DIFF_CHECK_PATH = '/checks/diff';
+export const SCAN_CHECK_PATH = '/checks/scan';
 export const SPEC_CHECK_PATH = '/checks/spec';
 export const PROJECTS_PATH = '/projects';
 // --- requests (producer → platform) -----------------------------------------
@@ -51,6 +53,24 @@ export const DiffCheckRequestSchema = z
     base_ref: z.string().min(1),
     files: z.array(PacketFileSchema),
     spec: z.string().optional(),
+    ref: z.string().optional(),
+})
+    .strict();
+/**
+ * What `axtar_check_scan` ships — existing files, exactly as they are.
+ *
+ * No `diff` and no `base_ref`: this call audits what is in the tree, so there is
+ * nothing to compare against. `files` is `min(1)` because the platform declares
+ * `min_length=1` — a scan of nothing answered `clean` would be a lie, and the
+ * producer refuses long before this schema has to. `paths_requested` is the
+ * globs the caller asked for, verbatim; the platform records them and expands
+ * nothing itself.
+ */
+export const ScanCheckRequestSchema = z
+    .object({
+    project: z.string().min(1),
+    files: z.array(PacketFileSchema).min(1),
+    paths_requested: z.array(z.string()),
     ref: z.string().optional(),
 })
     .strict();
@@ -132,6 +152,26 @@ export const DiffCheckResponseSchema = z.object({
     dropped: z.array(DroppedRuleSchema),
     receipt: z.string(),
 });
+/**
+ * The audit of files as they stand (§9), and the receipt behind it (§10).
+ *
+ * The diff response **minus `unmet_spec`**, mirrored that way rather than
+ * reusing `DiffCheckResponseSchema` with an empty array: a scan has no spec to
+ * be unmet, and a contract carrying a field it can never fill teaches its
+ * consumers the wrong shape. `breaches` here means "these rules are broken in
+ * the code you asked about", not "this change broke them", and it gates nothing.
+ */
+export const ScanCheckResponseSchema = z.object({
+    check_id: z.string(),
+    url: z.string(),
+    verdict: z.string(),
+    breaches: z.array(FindingSchema),
+    advisories: z.array(FindingSchema),
+    considered: z.number().int(),
+    checked: z.number().int(),
+    dropped: z.array(DroppedRuleSchema),
+    receipt: z.string(),
+});
 /** The review of one plan (§9). Advisory — a spec check never gates. */
 export const SpecCheckResponseSchema = z.object({
     check_id: z.string(),
@@ -182,6 +222,9 @@ function tolerant(schema, raw) {
 }
 export function parseDiffCheckResponse(raw) {
     return tolerant(DiffCheckResponseSchema, raw);
+}
+export function parseScanCheckResponse(raw) {
+    return tolerant(ScanCheckResponseSchema, raw);
 }
 export function parseSpecCheckResponse(raw) {
     return tolerant(SpecCheckResponseSchema, raw);

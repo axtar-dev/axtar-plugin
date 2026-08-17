@@ -1,5 +1,5 @@
 /**
- * The two tools, with the engine client and the packet producer stubbed.
+ * The tools, with the engine client and the packet producers stubbed.
  *
  * What is asserted here is behaviour the spec makes non-negotiable, not code
  * paths: an unset-up repo **refuses** (and says the refusal is not a verdict),
@@ -16,13 +16,20 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { EngineClient, EngineResult, ResponseParser } from '../../src/shared/engine/client.js';
-import type { DiffPacket, ProduceOptions, ProducerOutcome } from '../../src/shared/producer.js';
+import type {
+  DiffPacket,
+  ProduceOptions,
+  ProducerOutcome,
+  ScanPacket,
+} from '../../src/shared/producer.js';
 import {
   CHECK_DIFF_DESCRIPTION,
+  CHECK_SCAN_DESCRIPTION,
   PROJECTS_DESCRIPTION,
   SERVER_NAME,
   createServer,
   runCheckDiff,
+  runCheckScan,
   runCheckSpec,
   runProjects,
 } from '../../src/mcp/checks-server.js';
@@ -55,6 +62,33 @@ const DIFF_BODY = {
   checked: 209,
   dropped: [{ rule_id: 'AXT-0003', reason: 'packet_cap' }],
   receipt: '212 considered · 209 checked · 1 dropped · 1 breaches · 0 advisories',
+};
+
+/** `POST /mentor/checks/scan` — the diff body minus `unmet_spec`. */
+const SCAN_BODY = {
+  check_id: PROJECT,
+  url: `https://app.axtar.dev/checks/${PROJECT}`,
+  verdict: 'breaches',
+  breaches: [
+    {
+      rule_id: 'AXT-0011',
+      rule_version: 2,
+      severity: 'must',
+      path: 'src/billing/invoice.ts',
+      line: 117,
+      evidence_quote: 'const total = items.reduce(sum, 0);',
+      why: 'Money is summed as a float rather than in minor units.',
+      fix: 'Sum in integer minor units.',
+      source: { kind: 'stated', ref: 'docs/money.md', excerpt: '…' },
+      defended: true,
+      cache_sourced: false,
+    },
+  ],
+  advisories: [],
+  considered: 212,
+  checked: 210,
+  dropped: [{ rule_id: 'AXT-0013', reason: 'timeout' }],
+  receipt: '212 considered · 210 checked · 1 dropped · 1 breaches · 0 advisories',
 };
 
 const SPEC_BODY = {
@@ -97,6 +131,12 @@ const PACKET: DiffPacket = {
   branch: 'feat/refunds',
   binarySkipped: ['assets/logo.png'],
   untracked: ['src/api/new.ts'],
+};
+
+const SCAN_PACKET: ScanPacket = {
+  files: [{ path: 'src/billing/invoice.ts', content: 'const total = 1;\n' }],
+  paths_requested: ['src/billing/**'],
+  skipped_binary: ['src/billing/logo.png'],
 };
 
 interface Posted {
@@ -143,6 +183,11 @@ function deps(over: Partial<ServerDeps> = {}): ServerDeps {
     produce: async (_options: ProduceOptions): Promise<ProducerOutcome<DiffPacket>> => ({
       ok: true,
       value: PACKET,
+    }),
+    findRoot: async (): Promise<ProducerOutcome<string>> => ({ ok: true, value: repoDir }),
+    produceScan: async (): Promise<ProducerOutcome<ScanPacket>> => ({
+      ok: true,
+      value: SCAN_PACKET,
     }),
     readSpecFile: () => '# plan\n',
     ...over,
@@ -340,6 +385,204 @@ describe('axtar_check_diff', () => {
 
     expect(body).toContain('arguments it cannot use');
     expect(posted).toEqual([]);
+  });
+});
+
+describe('axtar_check_scan', () => {
+  function scanDeps(over: Partial<ServerDeps> = {}): ServerDeps {
+    return deps({ createClient: () => clientReturning(SCAN_BODY), ...over });
+  }
+
+  it('ships the expanded files and leads with the receipt block', async () => {
+    const body = bodyOf(await runCheckScan({ paths: ['src/billing/**'] }, scanDeps()));
+
+    expect(body.split('\n').slice(0, 3)).toEqual([
+      `check_id: ${PROJECT}`,
+      `url:      https://app.axtar.dev/checks/${PROJECT}`,
+      'summary:  212 considered · 210 checked · 1 dropped · 1 breaches · 0 advisories',
+    ]);
+    expect(posted).toEqual([
+      {
+        path: '/checks/scan',
+        body: {
+          project: PROJECT,
+          files: SCAN_PACKET.files,
+          paths_requested: ['src/billing/**'],
+        },
+      },
+    ]);
+  });
+
+  it('expands the globs from the repo root, not the cwd', async () => {
+    const seen: { root: string; paths: string[] }[] = [];
+
+    await runCheckScan(
+      { paths: ['src/billing/**', 'docs/money.md'] },
+      scanDeps({
+        findRoot: async () => ({ ok: true, value: '/work/tree' }),
+        produceScan: async (root, paths) => {
+          seen.push({ root, paths });
+          return { ok: true, value: SCAN_PACKET };
+        },
+      }),
+    );
+
+    expect(seen).toEqual([{ root: '/work/tree', paths: ['src/billing/**', 'docs/money.md'] }]);
+  });
+
+  it('renders the breach and says the audit gates nothing', async () => {
+    const body = bodyOf(await runCheckScan({ paths: ['src/billing/**'] }, scanDeps()));
+
+    expect(body).toContain('a scan gates nothing');
+    expect(body).toContain('AXT-0011@2 · must · src/billing/invoice.ts:117 · defended');
+    expect(body).toContain('Money is summed as a float rather than in minor units.');
+    expect(body).toContain('stated · docs/money.md');
+    expect(body).toContain('AXT-0013 (timeout)');
+    // A scan has no spec, so the diff's third section must not appear.
+    expect(body).not.toContain('UNMET SPEC');
+  });
+
+  it('reports what the producer did, after the judgment', async () => {
+    const body = bodyOf(await runCheckScan({ paths: ['src/billing/**'] }, scanDeps()));
+
+    expect(body).toContain('packet: 1 file(s) sent whole');
+    expect(body).toContain('1 path(s) requested');
+    expect(body).toContain('1 binary skipped (src/billing/logo.png)');
+  });
+
+  it('sends no ref by default — an audit threads into nothing', async () => {
+    await runCheckScan({ paths: ['src/**'] }, scanDeps());
+
+    expect(posted[0]?.body).not.toHaveProperty('ref');
+  });
+
+  it('passes a ref through verbatim when the caller threads one', async () => {
+    await runCheckScan({ paths: ['src/**'], ref: 'BILL-402' }, scanDeps());
+
+    expect(posted[0]?.body).toMatchObject({ ref: 'BILL-402' });
+  });
+
+  it('requires paths, and never posts without them', async () => {
+    const missing = bodyOf(await runCheckScan({}, scanDeps()));
+    expect(missing).toContain('arguments it cannot use');
+    expect(missing).toContain('paths');
+
+    const empty = bodyOf(await runCheckScan({ paths: [] }, scanDeps()));
+    expect(empty).toContain('arguments it cannot use');
+
+    expect(posted).toEqual([]);
+  });
+
+  it('rejects pasted file contents instead of silently dropping them', async () => {
+    const body = bodyOf(
+      await runCheckScan({ paths: ['src/**'], files: [{ path: 'a', content: 'x' }] }, scanDeps()),
+    );
+
+    expect(body).toContain('arguments it cannot use');
+    expect(posted).toEqual([]);
+  });
+
+  it('refuses without a .axtar/config.yml, and never posts', async () => {
+    rmSync(join(repoDir, '.axtar'), { recursive: true, force: true });
+
+    const body = bodyOf(await runCheckScan({ paths: ['src/**'] }, scanDeps()));
+
+    expect(body).toContain('.axtar/config.yml');
+    expect(body).toContain('This is not a verdict');
+    expect(posted).toEqual([]);
+  });
+
+  it('refuses without the connection env vars, naming both', async () => {
+    const body = bodyOf(await runCheckScan({ paths: ['src/**'] }, scanDeps({ env: {} })));
+
+    expect(body).toContain('AXTAR_ENGINE_URL');
+    expect(body).toContain('AXTAR_API_KEY');
+    expect(body).toContain('This is not a verdict');
+    expect(posted).toEqual([]);
+  });
+
+  it('reports a glob that matched nothing as a local problem, not a verdict', async () => {
+    const body = bodyOf(
+      await runCheckScan(
+        { paths: ['src/nope/**'] },
+        scanDeps({
+          produceScan: async () => ({
+            ok: false,
+            reason: 'no_files_matched',
+            detail: 'no files matched — check the paths/globs (asked for: src/nope/**)',
+          }),
+        }),
+      ),
+    );
+
+    expect(body).toContain('could not assemble the scan packet');
+    expect(body).toContain('no files matched — check the paths/globs');
+    expect(body).toContain('This is not a verdict');
+    expect(posted).toEqual([]);
+  });
+
+  it('reports a non-repo cwd without asking the producer for anything', async () => {
+    const body = bodyOf(
+      await runCheckScan(
+        { paths: ['src/**'] },
+        scanDeps({
+          findRoot: async () => ({ ok: false, reason: 'not_a_repo', detail: 'no work tree' }),
+          produceScan: async () => {
+            throw new Error('the producer must not be reached');
+          },
+        }),
+      ),
+    );
+
+    expect(body).toContain('could not assemble the scan packet');
+    expect(body).toContain('git work tree');
+    expect(posted).toEqual([]);
+  });
+
+  it('fails open on a 500', async () => {
+    const body = bodyOf(
+      await runCheckScan(
+        { paths: ['src/**'] },
+        scanDeps({
+          createClient: () =>
+            clientFailing({ ok: false, reason: 'http', status: 500, detail: 'boom' }),
+        }),
+      ),
+    );
+
+    expect(body).toContain('could not run the scan check');
+    expect(body).toContain('HTTP 500 — boom');
+    expect(body).toContain('No verdict exists');
+    expect(body).toContain('Work may proceed');
+  });
+
+  it('fails open on a timeout', async () => {
+    const body = bodyOf(
+      await runCheckScan(
+        { paths: ['src/**'] },
+        scanDeps({
+          createClient: () => clientFailing({ ok: false, reason: 'timeout', detail: '>310000ms' }),
+        }),
+      ),
+    );
+
+    expect(body).toContain('could not run the scan check');
+    expect(body).toContain('timeout — >310000ms');
+    expect(body).toContain('Work may proceed');
+  });
+
+  it('degrades a drifted body but still leads with the salvaged receipt', async () => {
+    const body = bodyOf(
+      await runCheckScan(
+        { paths: ['src/**'] },
+        scanDeps({ createClient: () => clientReturning({ ...SCAN_BODY, breaches: 'nope' }) }),
+      ),
+    );
+
+    expect(body.split('\n')[0]).toBe(`check_id: ${PROJECT}`);
+    expect(body).toContain('Schema drift');
+    expect(body).toContain('conformance scan');
+    expect(body).toContain('/plugin update axtar');
   });
 });
 
@@ -646,7 +889,7 @@ describe('schema drift', () => {
 });
 
 describe('the server itself', () => {
-  it('registers the three tools, the checks carrying the receipt instruction', async () => {
+  it('registers the four tools, the checks carrying the receipt instruction', async () => {
     const server = createServer(deps());
     const client = new Client({ name: 'test', version: '0' });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
@@ -656,6 +899,7 @@ describe('the server itself', () => {
 
     expect(listed.tools.map((tool) => tool.name).sort()).toEqual([
       'axtar_check_diff',
+      'axtar_check_scan',
       'axtar_check_spec',
       'axtar_projects',
     ]);
@@ -730,9 +974,26 @@ describe('the server itself', () => {
     await server.close();
   });
 
+  it('publishes paths as a required argument on axtar_check_scan', async () => {
+    const server = createServer(deps());
+    const client = new Client({ name: 'test', version: '0' });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+
+    const scan = (await client.listTools()).tools.find((t) => t.name === 'axtar_check_scan');
+
+    expect(scan?.inputSchema.properties).toHaveProperty('paths');
+    expect(scan?.inputSchema.required).toEqual(['paths']);
+    await client.close();
+    await server.close();
+  });
+
   it('is the server the manifests point at', () => {
     expect(SERVER_NAME).toBe('axtar');
     expect(CHECK_DIFF_DESCRIPTION).toContain('Pass NO diff and NO file contents');
+    expect(CHECK_SCAN_DESCRIPTION).toContain('Check EXISTING code');
+    expect(CHECK_SCAN_DESCRIPTION).toContain('Use axtar_check_diff for a change');
+    expect(CHECK_SCAN_DESCRIPTION).toContain('not the whole repo');
     expect(PROJECTS_DESCRIPTION).toContain('It needs no binding itself');
   });
 });

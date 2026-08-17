@@ -16,6 +16,7 @@ import {
   findRepoRoot,
   newFileHunk,
   producePacket,
+  produceScanPacket,
   resolveBaseRef,
 } from '../../src/shared/producer.js';
 
@@ -308,6 +309,107 @@ describe('the packet', () => {
     const produced = await producePacket({ cwd: repo, baseRef: 'v9.9.9' });
 
     expect(produced).toMatchObject({ ok: false, reason: 'unknown_base_ref' });
+  });
+});
+
+describe('the scan packet', () => {
+  it('expands a glob over tracked files, sorted', async () => {
+    write('src/b.ts', 'export const b = 2;\n');
+    write('src/a.ts', 'export const a = 1;\n');
+    commit('more source');
+
+    const produced = await produceScanPacket(repo, ['src/**']);
+
+    if (!produced.ok) throw new Error(produced.detail);
+    expect(produced.value.files).toEqual([
+      { path: 'src/a.ts', content: 'export const a = 1;\n' },
+      { path: 'src/app.ts', content: 'export const a = 1;\n' },
+      { path: 'src/b.ts', content: 'export const b = 2;\n' },
+    ]);
+    expect(produced.value.paths_requested).toEqual(['src/**']);
+    expect(produced.value.skipped_binary).toEqual([]);
+  });
+
+  it('includes an untracked file that is not ignored, and excludes an ignored one', async () => {
+    write('.gitignore', 'src/generated.ts\n');
+    commit('ignore generated');
+    write('src/fresh.ts', 'export const fresh = 1;\n');
+    write('src/generated.ts', 'export const generated = 1;\n');
+
+    const produced = await produceScanPacket(repo, ['src']);
+
+    if (!produced.ok) throw new Error(produced.detail);
+    const paths = produced.value.files.map((f) => f.path);
+    expect(paths).toContain('src/fresh.ts');
+    expect(paths).not.toContain('src/generated.ts');
+  });
+
+  it('de-duplicates a file matched by two overlapping globs', async () => {
+    const produced = await produceScanPacket(repo, ['src', 'src/app.ts', 'src/**']);
+
+    if (!produced.ok) throw new Error(produced.detail);
+    expect(produced.value.files.map((f) => f.path)).toEqual(['src/app.ts']);
+    // Recorded verbatim: the platform stores what the caller asked for.
+    expect(produced.value.paths_requested).toEqual(['src', 'src/app.ts', 'src/**']);
+  });
+
+  it('skips a binary file and names it', async () => {
+    write('assets/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x00, 0x01]));
+    write('assets/notes.md', '# assets\n');
+    commit('assets');
+
+    const produced = await produceScanPacket(repo, ['assets']);
+
+    if (!produced.ok) throw new Error(produced.detail);
+    expect(produced.value.skipped_binary).toEqual(['assets/logo.png']);
+    expect(produced.value.files.map((f) => f.path)).toEqual(['assets/notes.md']);
+  });
+
+  it('handles paths with spaces (the -z parsing)', async () => {
+    write('docs/a note.md', 'hello\n');
+    commit('a note');
+
+    const produced = await produceScanPacket(repo, ['docs']);
+
+    if (!produced.ok) throw new Error(produced.detail);
+    expect(produced.value.files).toEqual([{ path: 'docs/a note.md', content: 'hello\n' }]);
+  });
+
+  it('refuses when nothing matched, rather than shipping an empty packet', async () => {
+    const produced = await produceScanPacket(repo, ['src/does-not-exist/**']);
+
+    expect(produced).toMatchObject({ ok: false, reason: 'no_files_matched' });
+    if (produced.ok) throw new Error('expected a refusal');
+    expect(produced.detail).toContain('no files matched — check the paths/globs');
+  });
+
+  it('refuses when only an ignored file matched', async () => {
+    write('.gitignore', 'build/\n');
+    commit('ignore build');
+    write('build/out.js', 'console.log(1);\n');
+
+    const produced = await produceScanPacket(repo, ['build']);
+
+    expect(produced).toMatchObject({ ok: false, reason: 'no_files_matched' });
+  });
+
+  it('refuses when every match was binary — the platform needs a non-empty files[]', async () => {
+    write('assets/logo.png', Buffer.from([0x89, 0x50, 0x00, 0x01]));
+    commit('binary only');
+
+    const produced = await produceScanPacket(repo, ['assets']);
+
+    expect(produced).toMatchObject({ ok: false, reason: 'no_files_matched' });
+    if (produced.ok) throw new Error('expected a refusal');
+    expect(produced.detail).toContain('1 binary');
+  });
+
+  it('refuses an empty path list rather than scanning the whole repo', async () => {
+    const produced = await produceScanPacket(repo, ['   ']);
+
+    expect(produced).toMatchObject({ ok: false, reason: 'no_files_matched' });
+    if (produced.ok) throw new Error('expected a refusal');
+    expect(produced.detail).toContain('no paths were given');
   });
 });
 

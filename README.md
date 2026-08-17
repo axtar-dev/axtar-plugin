@@ -1,9 +1,10 @@
 # Axtar — Claude Code plugin
 
 > **Your agent's model writes. Axtar's models audit.** This plugin gives a coding
-> agent two places to spend your team's rule corpus: **before it writes** (check
-> the spec) and **when it's done** (check the diff). Every check comes back with
-> a receipt — what was considered, what was checked, what was dropped.
+> agent three places to spend your team's rule corpus: **before it writes** (check
+> the spec), **when it's done** (check the diff), and **on code that was never a
+> diff** (scan what is already there). Every check comes back with a receipt —
+> what was considered, what was checked, what was dropped.
 
 The plugin ships **one stdio MCP server** and nothing else. There are no hooks:
 nothing intercepts an edit, nothing blocks a tool call. The agent asks for a
@@ -56,8 +57,8 @@ project: 3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55 # issued by the portal
 ```
 
 Only `project:` is read locally. The rest of the file (`knowledge:`) is the
-ingest contract and is parsed, strictly, by the platform. Without the file, both
-check tools refuse and point at `axtar_projects` — a check against no rules is
+ingest contract and is parsed, strictly, by the platform. Without the file, every
+check tool refuses and points at `axtar_projects` — a check against no rules is
 worse than no check.
 
 ## The tools
@@ -66,6 +67,7 @@ worse than no check.
 | --- | --- | --- |
 | [`axtar_check_spec`](#axtar_check_spec-spec--spec_path-ref-) | yes | Before the code exists: what must the plan state, what does it conflict with, what does it leave unaddressed. |
 | [`axtar_check_diff`](#axtar_check_diff-base_ref-spec_path-ref-) | yes | When the change is done: which rules it breaches, which it brushes against, and the receipt. |
+| [`axtar_check_scan`](#auditing-existing-code--axtar_check_scan-paths-ref-) | yes | When there is no diff: which rules the code **already** breaks, for the files or globs you name. |
 | [`axtar_projects`](#axtar_projects) | **no** | Which projects exist, which one governs this repo, and the `.axtar/config.yml` to write to change that. |
 
 ### `axtar_check_spec({ spec | spec_path, ref? })`
@@ -135,6 +137,44 @@ against the root commit. `ref` (the thread a check belongs to) defaults to the
 current branch. Binary files are excluded from the upload, with a note; nothing
 else is trimmed locally — the platform owns the packet cap and names the rules it
 had to drop.
+
+### Auditing existing code — `axtar_check_scan({ paths, ref? })`
+
+Some code was never a diff you checked: it predates Axtar, it arrived with a
+merge, or you have just been handed the module. `axtar_check_scan` audits it **as
+it stands** — same rules, same findings, same receipt, no base ref.
+
+```
+> are we following our own rules in the billing module?
+  axtar_check_scan(paths: ["src/billing/**", "docs/money.md"])
+
+check_id: 5a1c8e07-4d62-4b39-8f21-0c7e3b9a6d44
+url:      https://app.axtar.dev/checks/5a1c8e07-4d62-4b39-8f21-0c7e3b9a6d44
+summary:  212 considered · 210 checked · 2 dropped · 1 breaches · 1 advisories
+
+verdict:  breaches (an audit of the files as they are — a scan gates nothing)
+
+BREACHES (1)
+1. AXT-0011@2 · must · src/billing/invoice.ts:117 · defended
+   evidence: const total = items.reduce(sum, 0);
+   why:      Money is summed as a float rather than in minor units.
+   fix:      Sum in integer minor units and format at the edge.
+   source:   stated · docs/money.md
+```
+
+`paths` is **required**: name a feature area, not the whole repo — an audit of
+everything is a bill, not a review. The server expands the globs against the
+work tree (`git ls-files` for tracked files, plus untracked ones that
+`.gitignore` does not exclude) and reads them whole, so the agent passes no file
+contents here either. A glob that matches nothing is a refusal, never an empty
+packet answered `clean`.
+
+`ref` has **no default**, unlike `axtar_check_diff`: an audit is not a change
+iterating on a branch, so it threads into nothing. Pass one only to tie repeated
+scans of the same area together.
+
+`breaches` here means "the code already breaks these rules" — a backlog, not a
+blocked change. Use `axtar_check_diff` for work you just did.
 
 ### `axtar_projects()`
 
@@ -208,8 +248,9 @@ url:      https://app.axtar.dev/checks/chk_7f2a91
 summary:  212 rules considered · 209 checked · 3 dropped · 2 breaches · 1 advisory
 ```
 
-Both tool descriptions instruct the agent to surface that block in its summary
-and in any PR description it writes, so the proof lands where a human reads it.
+Every check tool's description instructs the agent to surface that block in its
+summary (and in any PR description it writes), so the proof lands where a human
+reads it.
 `considered` vs `checked` is the honesty property: **what was not judged is as
 visible as what was**, and `url` addresses the immutable record behind it.
 
