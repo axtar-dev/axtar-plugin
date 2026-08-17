@@ -12,9 +12,13 @@ The design authority is the redesign spec in the sibling platform repo:
 §10 (evidence/receipt), §12 (fail direction), §15 (this repo's role).
 The wire contract it implements is `api/app/schemas/plugin/check.py` there.
 
-**The hard reset landed.** Hooks, host adapters, the gate CLI and the Mentor
-consult server are deleted; what remains is the checks MCP server, the local
-packet producer, the wire schemas, and the packaging bones.
+**The hard reset landed.** The gating hooks, host adapters, the gate CLI and the
+Mentor consult server are deleted; what remains is the checks MCP server, the
+local packet producer, the wire schemas, the packaging bones — and **one advisory
+hook**, `src/hooks/check-reminder.ts` on the `Stop` event. It is not the old gate
+and must never grow into one: it evaluates nothing, calls the platform not at all,
+cannot deny a tool call, and says its one sentence at most once per unchecked
+working-tree state.
 
 ## Build & verify
 
@@ -36,9 +40,12 @@ uncommitted `dist/` would simply be absent at runtime. Always rebuild and commit
 
 ## Non-negotiable invariants
 
-1. **Never write to stdout.** It is the MCP JSON-RPC channel; a stray
-   `console.log` corrupts the framing and the host drops the connection. Every
-   diagnostic goes through `src/shared/log.ts` → stderr.
+1. **Never write to stdout.** In the MCP server it is the JSON-RPC channel; a
+   stray `console.log` corrupts the framing and the host drops the connection.
+   Every diagnostic goes through `src/shared/log.ts` → stderr. The one exception
+   is the hook entrypoint, whose stdout *is* its decision channel: it writes
+   exactly one JSON object (`{"decision":"block","reason":…}`), only when it
+   nudges, and nothing else ever.
 2. **The agent surface fails open** (spec §12). Timeout, 5xx, unparseable body,
    DNS — every failure comes back as text the agent can read, never an exception
    that stalls a developer mid-flow. The engine client returns a discriminated
@@ -61,8 +68,19 @@ uncommitted `dist/` would simply be absent at runtime. Always rebuild and commit
    selector: the tool lists what exists and hands back the exact file to write,
    and the command has the agent edit and commit it. Nothing in `src/` may ever
    write that file, and the platform stores no per-repo choice to write to.
-6. **Named exports only.** Default exports are an eslint error.
-7. **`strict` TypeScript**, including `noUncheckedIndexedAccess` and
+   **Nothing in `src/` writes into the bound repo at all** — not the config, not
+   state, not a marker file. The turn-end reminder's memory lives in
+   `~/.axtar/state/<sha256 of the repo root path>.json`
+   (`src/shared/tree-state.ts`), and a developer's `git status` must never grow a
+   line because Axtar is installed.
+6. **The reminder is advisory and can never nag.** The `Stop` hook allows the
+   stop on every path but one, and the one that nudges records that it did, so a
+   second turn over the same tree state is silent. `stop_hook_active`,
+   `AXTAR_NO_REMINDER`, an unbound repo, a clean tree, an unreadable tree, a bad
+   payload: all allow. Adding a rung that can fire twice for one state, or one
+   that calls the platform, is the old gate coming back.
+7. **Named exports only.** Default exports are an eslint error.
+8. **`strict` TypeScript**, including `noUncheckedIndexedAccess` and
    `exactOptionalPropertyTypes`. Omit absent optional fields rather than passing
    `undefined` onto the wire.
 
@@ -70,6 +88,13 @@ uncommitted `dist/` would simply be absent at runtime. Always rebuild and commit
 
 - `src/mcp/checks-server.ts` — the MCP server (the only runtime surface): the
   four tools, their argument schemas, the refusals and the fail-open paths.
+- `src/hooks/check-reminder.ts` — the one hook (`Stop`, compiled to
+  `dist/hooks/check-reminder.js`): the allow ladder, the single nudge, and the
+  `{"decision":"block"}` line it prints. Reads stdin, writes nothing but state.
+- `src/shared/tree-state.ts` — the shared work-tree fingerprint (`git status`
+  + `git diff HEAD`, hashed) and the `~/.axtar/state/*.json` file behind it. The
+  hook and the server must never compute that hash differently, which is why
+  there is exactly one of them.
 - `src/shared/producer.ts` — the local packet producers: the diff packet
   (base-ref ladder, `git diff`, changed + untracked files read whole) and the
   scan packet (`git ls-files` glob expansion, tracked + untracked-not-ignored).
@@ -85,8 +110,9 @@ uncommitted `dist/` would simply be absent at runtime. Always rebuild and commit
 - `src/shared/log.ts` — stderr logger.
 - `test/fixtures/wire/` — pinned response bodies; they track the platform's
   `check.py` and must be updated in the same change it is.
-- `commands/`, `.mcp.json`, `.claude-plugin/` — plugin wiring (auto-discovered
-  by Claude Code).
+- `commands/`, `.mcp.json`, `hooks/hooks.json`, `.claude-plugin/` — plugin wiring
+  (auto-discovered by Claude Code). `hooks/hooks.json` declares the one `Stop`
+  entry and points at `${CLAUDE_PLUGIN_ROOT}/dist/hooks/check-reminder.js`.
 - `scripts/` — version sync + manifest validation for releases.
 
 ## Releasing

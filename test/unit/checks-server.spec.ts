@@ -147,6 +147,8 @@ interface Posted {
 let repoDir: string;
 let posted: Posted[];
 let fetched: string[];
+/** Repo roots stamped as checked — what keeps the turn-end reminder quiet. */
+let marked: string[];
 
 /** A client that answers every POST and GET with `body`, through the caller's parser. */
 function clientReturning(body: unknown): EngineClient {
@@ -190,6 +192,9 @@ function deps(over: Partial<ServerDeps> = {}): ServerDeps {
       value: SCAN_PACKET,
     }),
     readSpecFile: () => '# plan\n',
+    markChecked: async (repoRoot: string) => {
+      marked.push(repoRoot);
+    },
     ...over,
   };
 }
@@ -209,6 +214,7 @@ beforeEach(() => {
   repoDir = realpathSync(mkdtempSync(join(tmpdir(), 'axtar-server-')));
   posted = [];
   fetched = [];
+  marked = [];
   writeConfig(PROJECT);
 });
 
@@ -885,6 +891,79 @@ describe('schema drift', () => {
 
     expect(body).toContain('Schema drift');
     expect(body).toContain('"verdict": "ready"');
+  });
+});
+
+/**
+ * The marker the advisory turn-end reminder reads (`hooks/check-reminder.ts`).
+ *
+ * It says one thing — "this tree was checked" — so it may only be written when
+ * that is true: a parsed response carrying a `check_id`. A refusal, an outage
+ * and a drifted body all judged nothing, and a spec check judged a plan rather
+ * than the tree; stamping on any of those would silence the reminder for a
+ * change nobody looked at.
+ */
+describe('the checked marker', () => {
+  it('stamps the work tree after a successful diff check', async () => {
+    await runCheckDiff({}, deps());
+
+    expect(marked).toEqual([PACKET.repoRoot]);
+  });
+
+  it('stamps the work tree after a successful scan', async () => {
+    await runCheckScan(
+      { paths: ['src/billing/**'] },
+      deps({ createClient: () => clientReturning(SCAN_BODY) }),
+    );
+
+    expect(marked).toEqual([repoDir]);
+  });
+
+  it('does not stamp after a spec check — a spec proves nothing about the tree', async () => {
+    await runCheckSpec(
+      { spec: '# plan' },
+      deps({ createClient: () => clientReturning(SPEC_BODY) }),
+    );
+
+    expect(marked).toEqual([]);
+  });
+
+  it('does not stamp a refusal', async () => {
+    rmSync(join(repoDir, '.axtar'), { recursive: true, force: true });
+
+    await runCheckDiff({}, deps());
+
+    expect(marked).toEqual([]);
+  });
+
+  it('does not stamp a producer failure', async () => {
+    await runCheckDiff(
+      {},
+      deps({ produce: async () => ({ ok: false, reason: 'no_base_ref', detail: 'nothing' }) }),
+    );
+
+    expect(marked).toEqual([]);
+  });
+
+  it('does not stamp when the platform could not answer', async () => {
+    await runCheckDiff(
+      {},
+      deps({
+        createClient: () =>
+          clientFailing({ ok: false, reason: 'http', status: 500, detail: 'boom' }),
+      }),
+    );
+
+    expect(marked).toEqual([]);
+  });
+
+  it('does not stamp a drifted response — nothing parsed, nothing checked', async () => {
+    await runCheckDiff(
+      {},
+      deps({ createClient: () => clientReturning({ ...DIFF_BODY, breaches: 'now a string' }) }),
+    );
+
+    expect(marked).toEqual([]);
   });
 });
 

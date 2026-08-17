@@ -60,7 +60,14 @@ absent, point the user at `/axtar:projects`, which lists the org's projects and
 writes the config for the one they pick. The portal issues the project id, so
 never invent one — and the file only counts once it is committed.
 
-## 4. Report
+## 4. Offer the repo a standing instruction
+
+Offer (do not impose) to add two lines to the repo's `CLAUDE.md`, so every future
+session reaches for the checks without being asked: **"Before implementing a
+spec, run `axtar_check_spec`. After completing a code change, run
+`axtar_check_diff` before presenting."** Only write it if the user says yes.
+
+## 5. Report
 
 Confirm: the platform is reachable and the key was accepted; the settings were
 written to `.claude/settings.local.json`; and either which project governs this

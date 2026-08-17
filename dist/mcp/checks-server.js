@@ -33,6 +33,11 @@
  * and work may proceed. Nothing here throws an MCP error, and nothing here
  * invents a verdict; CI is the surface that fails closed.
  *
+ * **A successful diff or scan leaves a marker** (`shared/tree-state.ts`): the
+ * fingerprint of the tree it judged, written to `~/.axtar/state` — never into
+ * the repository. It is what the advisory turn-end reminder
+ * (`hooks/check-reminder.ts`) reads to know this tree was already checked.
+ *
  * **stdout is the JSON-RPC channel — never write to it.** Diagnostics go to
  * stderr through `shared/log.ts`.
  */
@@ -46,6 +51,7 @@ import { ENGINE_URL_ENV, loadEngineConfig, setupInstructions } from '../shared/e
 import { log } from '../shared/log.js';
 import { findRepoRoot, produceScanPacket, producePacket } from '../shared/producer.js';
 import { bindingInstructions, loadRepoBinding } from '../shared/project/config.js';
+import { markWorkTreeChecked } from '../shared/tree-state.js';
 import { renderDiffResponse, renderFailOpen, renderProjects, renderProjectsFailure, renderRefusal, renderScanResponse, renderSchemaDrift, renderSpecResponse, } from '../shared/render.js';
 import { DIFF_CHECK_PATH, DiffCheckRequestSchema, PROJECTS_PATH, SCAN_CHECK_PATH, SPEC_CHECK_PATH, ScanCheckRequestSchema, SpecCheckRequestSchema, parseDiffCheckResponse, parseProjectListResponse, parseScanCheckResponse, parseSpecCheckResponse, } from '../shared/wire/checks.js';
 export const SERVER_NAME = 'axtar';
@@ -154,6 +160,7 @@ export function defaultDeps() {
         findRoot: findRepoRoot,
         produceScan: produceScanPacket,
         readSpecFile: (absolutePath) => readFileSync(absolutePath, 'utf-8'),
+        markChecked: markWorkTreeChecked,
     };
 }
 function text(body) {
@@ -372,6 +379,7 @@ export async function runCheckDiff(rawArgs, deps) {
         log.warn('diff response failed the wire schema', { issues: result.value.issues });
         return text(`${renderSchemaDrift('diff', result.value)}\n\n${packetNote(packet)}`);
     }
+    await deps.markChecked(packet.repoRoot);
     return text(`${renderDiffResponse(result.value.value)}\n\n${packetNote(packet)}`);
 }
 /**
@@ -422,6 +430,7 @@ export async function runCheckScan(rawArgs, deps) {
         log.warn('scan response failed the wire schema', { issues: result.value.issues });
         return text(`${renderSchemaDrift('scan', result.value)}\n\n${scanPacketNote(packet)}`);
     }
+    await deps.markChecked(root.value);
     return text(`${renderScanResponse(result.value.value)}\n\n${scanPacketNote(packet)}`);
 }
 export async function runCheckSpec(rawArgs, deps) {

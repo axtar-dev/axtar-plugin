@@ -6,9 +6,12 @@
 > diff** (scan what is already there). Every check comes back with a receipt —
 > what was considered, what was checked, what was dropped.
 
-The plugin ships **one stdio MCP server** and nothing else. There are no hooks:
-nothing intercepts an edit, nothing blocks a tool call. The agent asks for a
-check; the platform judges; the answer lands in the transcript.
+The plugin ships **one stdio MCP server** and **one advisory hook**. There are no
+gating hooks: nothing intercepts an edit, nothing blocks a tool call, nothing
+evaluates your code behind your back. The agent asks for a check; the platform
+judges; the answer lands in the transcript. The one hook never checks anything
+itself — it is a [turn-end reminder](#the-turn-end-reminder) that asks, at most
+once per unchecked change, for the check the agent forgot.
 
 ---
 
@@ -42,6 +45,7 @@ project's rules govern this repo** (a committed file).
 | `AXTAR_API_KEY` | _(required)_ | `axtar_pk_…` bearer token from the portal's Settings → API keys. |
 | `AXTAR_CHECK_TIMEOUT_MS` | `310000` | Per-request budget. The platform caps a check at 300 s and returns partials rather than exceeding it. |
 | `AXTAR_LOG_LEVEL` | `info` | `debug` · `info` · `warn` · `error`, on stderr. |
+| `AXTAR_NO_REMINDER` | _(unset)_ | Set to anything to switch off the [turn-end reminder](#the-turn-end-reminder). The tools are unaffected. |
 | `CLAUDE_PROJECT_DIR` | `process.cwd()` | Repo root; where the search for `.axtar/config.yml` starts. |
 
 Neither of the first two has a fallback: unset, the tools refuse with setup
@@ -259,6 +263,35 @@ When the platform cannot answer — timeout, 5xx, an unreachable host — the to
 They never throw, and they never invent a clean verdict. (CI is the surface that
 fails closed.)
 
+## The turn-end reminder
+
+The plugin's one hook, on Claude Code's **`Stop`** event — which fires when the
+agent has finished its whole turn, not when it edits a file. It runs no check
+itself: no code is evaluated, the platform is never called, and no tool call can
+be denied by it. All it does is notice that a turn is ending with **code changed
+in the working tree that no Axtar check has seen**, and ask the agent — once — to
+run `axtar_check_diff` and surface the receipt before it finishes.
+
+**When it fires:** at the end of a turn, when the repo has a committed
+`.axtar/config.yml`, the tree is dirty, and the current tree state has neither
+been checked nor already been reminded about. **At most once per unchecked
+state:** if the check cannot run (engine down, key missing) the reminder does not
+repeat — an impossible check must not become a nag. Change the code again and it
+re-arms; run the check and it goes quiet.
+
+What it remembers lives in `~/.axtar/state/<hash-of-repo-path>.json`
+(`last_checked_hash`, `last_nudged_hash`) — **outside** the repository, because
+the plugin writes nothing into a repo it is bound to.
+
+**Two ways to switch it off:**
+
+```bash
+AXTAR_NO_REMINDER=1        # set it in .claude/settings.local.json → env
+```
+
+or remove `hooks/hooks.json` from the installed plugin. Either way every tool
+keeps working exactly as before — the reminder is not part of any check.
+
 ## Development
 
 ```bash
@@ -285,6 +318,8 @@ npm run validate:manifests
 - **Nothing selects a project** — the plugin reads `.axtar/config.yml` and never
   writes it; `axtar_projects` lists and instructs, and the platform stores no
   per-repo choice.
+- **Nothing is written into the bound repo, at all** — not the config, not state.
+  What the turn-end reminder remembers lives in `~/.axtar/state/`.
 - **`strict` TypeScript**, including `noUncheckedIndexedAccess` and
   `exactOptionalPropertyTypes`.
 

@@ -1,0 +1,16 @@
+{
+  "description": "Axtar — one advisory turn-end reminder. It never gates an edit: on Stop (the end of a whole turn) it checks whether the working tree changed without an Axtar check, and if so asks once for axtar_check_diff. Set AXTAR_NO_REMINDER to switch it off.",
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/check-reminder.js",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}
