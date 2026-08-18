@@ -1,0 +1,42 @@
+{
+  "check_id": "7c1b9e40-2a33-4f61-8d2b-5e9f0a7c3311",
+  "url": "https://app.axtar.dev/checks/7c1b9e40-2a33-4f61-8d2b-5e9f0a7c3311",
+  "verdict": "needs_revision",
+  "must_state": [
+    {
+      "rule_id": "AXT-0001",
+      "rule_version": 1,
+      "statement": "A refund can never exceed the original charge.",
+      "why": "The spec adds a refund endpoint and never bounds the amount.",
+      "line_for_the_spec": "The refund amount must never exceed the original charge.",
+      "source": {
+        "kind": "stated",
+        "ref": "docs/refunds.md",
+        "excerpt": "A refund can never exceed the original charge."
+      }
+    }
+  ],
+  "conflicts": [
+    {
+      "rule_id": "AXT-0002",
+      "rule_version": 2,
+      "where_in_spec": "Errors are returned as bare strings.",
+      "concern": "Errors cross the API boundary as typed problem documents.",
+      "suggested_revision": "Return errors as RFC 7807 problem documents.",
+      "source": { "kind": "authored", "ref": null, "excerpt": null }
+    }
+  ],
+  "unaddressed": [
+    {
+      "rule_id": "AXT-0005",
+      "rule_version": 1,
+      "statement": "Ledger writes are append-only.",
+      "why": null
+    }
+  ],
+  "open_questions": ["Which service owns the refund ledger entry?"],
+  "considered": 88,
+  "checked": 86,
+  "dropped": [{ "rule_id": "AXT-0009", "reason": "timeout" }],
+  "receipt": "88 considered · 86 checked · 1 dropped · 1 must-state · 1 conflicts"
+}

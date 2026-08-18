@@ -1,54 +1,69 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { loadConsultConfig, loadEngineConfig } from '../../src/shared/engine/config.js';
+import { describe, expect, it } from 'vitest';
 
-/**
- * The consult path is quality-first (mentor 45s + adversarial guard 45s),
- * NOT fast-budgeted like the gate/evaluate hook (10s). It therefore reads its
- * own timeout knob and must never inherit the hook's short budget.
- */
-describe('loadConsultConfig', () => {
-  const SAVED = { ...process.env };
+import {
+  API_KEY_ENV,
+  DEFAULT_TIMEOUT_MS,
+  ENGINE_URL_ENV,
+  TIMEOUT_ENV,
+  loadEngineConfig,
+  setupInstructions,
+} from '../../src/shared/engine/config.js';
 
-  beforeEach(() => {
-    delete process.env.AXTAR_CONSULT_TIMEOUT_MS;
-    delete process.env.AXTAR_HOOK_TIMEOUT_MS;
-    delete process.env.AXTAR_ENGINE_URL;
-    delete process.env.AXTAR_API_KEY;
+const BOTH = {
+  [ENGINE_URL_ENV]: 'https://app.axtar.dev/mentor',
+  [API_KEY_ENV]: 'axtar_pk_test',
+};
+
+describe('loadEngineConfig', () => {
+  it('reads both variables and strips trailing slashes off the base URL', () => {
+    const result = loadEngineConfig({
+      ...BOTH,
+      [ENGINE_URL_ENV]: 'https://app.axtar.dev/mentor//',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.baseUrl).toBe('https://app.axtar.dev/mentor');
+    expect(result.config.apiKey).toBe('axtar_pk_test');
   });
 
-  afterEach(() => {
-    process.env = { ...SAVED };
+  it('reports every missing variable rather than defaulting to localhost', () => {
+    const result = loadEngineConfig({});
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.missing).toEqual([ENGINE_URL_ENV, API_KEY_ENV]);
   });
 
-  it('defaults to a 90s budget — well above the 10s hook timeout', () => {
-    expect(loadConsultConfig().timeoutMs).toBe(90000);
-    expect(loadConsultConfig().timeoutMs).toBeGreaterThan(loadEngineConfig().timeoutMs);
+  it('treats a blank value as missing', () => {
+    const result = loadEngineConfig({ ...BOTH, [API_KEY_ENV]: '   ' });
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.missing).toEqual([API_KEY_ENV]);
   });
 
-  it('honours AXTAR_CONSULT_TIMEOUT_MS when set', () => {
-    process.env.AXTAR_CONSULT_TIMEOUT_MS = '120000';
-    expect(loadConsultConfig().timeoutMs).toBe(120000);
+  it('budgets above the platform 300s check cap by default', () => {
+    const result = loadEngineConfig(BOTH);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.config.timeoutMs).toBe(DEFAULT_TIMEOUT_MS);
+    expect(result.config.timeoutMs).toBeGreaterThan(300_000);
   });
 
-  it('ignores invalid AXTAR_CONSULT_TIMEOUT_MS, keeping the 90s default', () => {
-    process.env.AXTAR_CONSULT_TIMEOUT_MS = 'not-a-number';
-    expect(loadConsultConfig().timeoutMs).toBe(90000);
-    process.env.AXTAR_CONSULT_TIMEOUT_MS = '0';
-    expect(loadConsultConfig().timeoutMs).toBe(90000);
+  it('honours a positive AXTAR_CHECK_TIMEOUT_MS and ignores nonsense', () => {
+    const at = (raw: string): number => {
+      const result = loadEngineConfig({ ...BOTH, [TIMEOUT_ENV]: raw });
+      if (!result.ok) throw new Error('expected a config');
+      return result.config.timeoutMs;
+    };
+    expect(at('120000')).toBe(120_000);
+    expect(at('0')).toBe(DEFAULT_TIMEOUT_MS);
+    expect(at('-5')).toBe(DEFAULT_TIMEOUT_MS);
+    expect(at('soon')).toBe(DEFAULT_TIMEOUT_MS);
   });
 
-  it('does NOT fall back to AXTAR_HOOK_TIMEOUT_MS (the gate budget)', () => {
-    // Mutation guard: if consult inherits the hook timeout, this is 10000 → fail.
-    process.env.AXTAR_HOOK_TIMEOUT_MS = '10000';
-    expect(loadConsultConfig().timeoutMs).toBe(90000);
-  });
-
-  it('shares baseUrl and apiKey with the gate config — only the timeout differs', () => {
-    process.env.AXTAR_ENGINE_URL = 'http://example.test:9000';
-    process.env.AXTAR_API_KEY = 'axtar_pk_test';
-    const consult = loadConsultConfig();
-    expect(consult.baseUrl).toBe('http://example.test:9000');
-    expect(consult.apiKey).toBe('axtar_pk_test');
-    expect(consult.timeoutMs).toBe(90000);
+  it('names the missing variables in the setup instructions', () => {
+    const text = setupInstructions([ENGINE_URL_ENV, API_KEY_ENV]);
+    expect(text).toContain(ENGINE_URL_ENV);
+    expect(text).toContain(API_KEY_ENV);
+    expect(text).toContain('/axtar:setup');
   });
 });

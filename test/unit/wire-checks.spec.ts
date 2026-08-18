@@ -1,0 +1,361 @@
+/**
+ * The wire contract, pinned.
+ *
+ * `test/fixtures/wire/*.json` are hand-copied response bodies in the shape
+ * `api/app/schemas/plugin/check.py` declares in the platform repo. **They must
+ * track that file**: when the platform's `DiffCheckResponse` / `ScanCheckResponse`
+ * / `SpecCheckResponse` (or the `FindingOut` / `MustStateOut` / `ConflictOut` /
+ * `UnaddressedOut` / `DroppedRuleOut` members) gain, lose or rename a field,
+ * update the fixtures and the zod schemas in the same change — a green test here
+ * against a stale fixture is exactly the silent skew this file exists to prevent.
+ */
+
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  DiffCheckRequestSchema,
+  PROJECTS_PATH,
+  SCAN_CHECK_PATH,
+  ScanCheckRequestSchema,
+  SpecCheckRequestSchema,
+  parseDiffCheckResponse,
+  parseProjectListResponse,
+  parseScanCheckResponse,
+  parseSpecCheckResponse,
+  salvageReceipt,
+} from '../../src/shared/wire/checks.js';
+
+const FIXTURES = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'fixtures', 'wire');
+
+function fixture(name: string): Record<string, unknown> {
+  return JSON.parse(readFileSync(resolve(FIXTURES, name), 'utf-8')) as Record<string, unknown>;
+}
+
+function listFixture(name: string): Record<string, unknown>[] {
+  return JSON.parse(readFileSync(resolve(FIXTURES, name), 'utf-8')) as Record<string, unknown>[];
+}
+
+describe('diff check response', () => {
+  it('round-trips the platform shape', () => {
+    const parsed = parseDiffCheckResponse(fixture('diff-response.json'));
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+    expect(parsed.value.verdict).toBe('breaches');
+    expect(parsed.value.considered).toBe(212);
+    expect(parsed.value.checked).toBe(209);
+    expect(parsed.value.dropped).toEqual([
+      { rule_id: 'AXT-0003', reason: 'packet_cap' },
+      { rule_id: 'AXT-0004', reason: 'timeout' },
+      { rule_id: 'AXT-0005', reason: 'provider_error' },
+    ]);
+    expect(parsed.value.receipt).toContain('212 considered');
+
+    const breach = parsed.value.breaches[0];
+    expect(breach?.rule_id).toBe('AXT-0001');
+    expect(breach?.rule_version).toBe(1);
+    expect(breach?.defended).toBe(true);
+    expect(breach?.source).toMatchObject({ kind: 'stated', ref: 'docs/refunds.md' });
+  });
+
+  it('accepts the nulls the platform really sends', () => {
+    const parsed = parseDiffCheckResponse(fixture('diff-response.json'));
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+
+    const advisory = parsed.value.advisories[0];
+    expect(advisory?.line).toBeNull();
+    expect(advisory?.evidence_quote).toBeNull();
+    expect(advisory?.source).toBeNull();
+    expect(advisory?.cache_sourced).toBe(true);
+  });
+
+  it('ignores a field the platform added — an addition must not hide a judgment', () => {
+    const body = { ...fixture('diff-response.json'), escape_rate: 0.02 };
+
+    const parsed = parseDiffCheckResponse(body);
+
+    expect(parsed.ok).toBe(true);
+  });
+
+  it('reports drift, with the raw body, when a field is renamed away', () => {
+    const body = fixture('diff-response.json');
+    delete body['receipt'];
+    body['summary_line'] = 'renamed by the platform';
+
+    const parsed = parseDiffCheckResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('receipt');
+    expect(parsed.raw).toBe(body);
+  });
+
+  it('reports drift on a type change inside a finding', () => {
+    const body = fixture('diff-response.json');
+    (body['breaches'] as Record<string, unknown>[])[0]!['rule_version'] = '1';
+
+    const parsed = parseDiffCheckResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('breaches.0.rule_version');
+  });
+
+  it('never throws on a body that is not an object at all', () => {
+    expect(parseDiffCheckResponse('<html>gateway</html>').ok).toBe(false);
+    expect(parseDiffCheckResponse(null).ok).toBe(false);
+  });
+});
+
+describe('scan check response', () => {
+  it('is posted to /checks/scan — its own route, not a diff with an empty base', () => {
+    expect(SCAN_CHECK_PATH).toBe('/checks/scan');
+  });
+
+  it('round-trips the platform shape (api/app/schemas/plugin/check.py)', () => {
+    const parsed = parseScanCheckResponse(fixture('scan-response.json'));
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+    expect(parsed.value.verdict).toBe('breaches');
+    expect(parsed.value.considered).toBe(212);
+    expect(parsed.value.checked).toBe(210);
+    expect(parsed.value.dropped).toEqual([
+      { rule_id: 'AXT-0013', reason: 'packet_cap' },
+      { rule_id: 'AXT-0014', reason: 'timeout' },
+    ]);
+    expect(parsed.value.receipt).toContain('212 considered');
+
+    const breach = parsed.value.breaches[0];
+    expect(breach?.rule_id).toBe('AXT-0011');
+    expect(breach?.rule_version).toBe(2);
+    expect(breach?.defended).toBe(true);
+    expect(breach?.source).toMatchObject({ kind: 'stated', ref: 'docs/money.md' });
+
+    const advisory = parsed.value.advisories[0];
+    expect(advisory?.line).toBeNull();
+    expect(advisory?.source).toBeNull();
+    expect(advisory?.cache_sourced).toBe(true);
+  });
+
+  it('carries no unmet_spec — a scan has no spec to be unmet', () => {
+    const parsed = parseScanCheckResponse(fixture('scan-response.json'));
+
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+    expect(parsed.value).not.toHaveProperty('unmet_spec');
+  });
+
+  it('reports drift when the receipt is renamed away', () => {
+    const body = fixture('scan-response.json');
+    delete body['receipt'];
+
+    const parsed = parseScanCheckResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('receipt');
+    expect(parsed.raw).toBe(body);
+  });
+
+  it('never throws on a body that is not an object at all', () => {
+    expect(parseScanCheckResponse('<html>gateway</html>').ok).toBe(false);
+    expect(parseScanCheckResponse(null).ok).toBe(false);
+  });
+
+  it('salvages the receipt out of a drifted scan body', () => {
+    const body = { ...fixture('scan-response.json'), breaches: 'nope' };
+
+    expect(salvageReceipt(body)).toMatchObject({
+      check_id: '5a1c8e07-4d62-4b39-8f21-0c7e3b9a6d44',
+      receipt: '212 considered · 210 checked · 2 dropped · 1 breaches · 1 advisories',
+    });
+  });
+});
+
+describe('spec check response', () => {
+  it('round-trips the platform shape', () => {
+    const parsed = parseSpecCheckResponse(fixture('spec-response.json'));
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+    expect(parsed.value.verdict).toBe('needs_revision');
+    expect(parsed.value.must_state[0]?.line_for_the_spec).toBe(
+      'The refund amount must never exceed the original charge.',
+    );
+    expect(parsed.value.conflicts[0]?.where_in_spec).toBe('Errors are returned as bare strings.');
+    expect(parsed.value.unaddressed[0]?.why).toBeNull();
+    expect(parsed.value.open_questions).toEqual(['Which service owns the refund ledger entry?']);
+    expect(parsed.value.dropped).toEqual([{ rule_id: 'AXT-0009', reason: 'timeout' }]);
+  });
+
+  it('reports drift when must_state loses its paste-ready line', () => {
+    const body = fixture('spec-response.json');
+    delete (body['must_state'] as Record<string, unknown>[])[0]!['line_for_the_spec'];
+
+    const parsed = parseSpecCheckResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('must_state.0.line_for_the_spec');
+  });
+});
+
+describe('project list response', () => {
+  it('is read from GET /projects', () => {
+    expect(PROJECTS_PATH).toBe('/projects');
+  });
+
+  it('round-trips the platform shape (api/app/schemas/plugin/project.py)', () => {
+    const parsed = parseProjectListResponse(listFixture('projects-response.json'));
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected the fixture to parse');
+    expect(parsed.value).toHaveLength(2);
+    expect(parsed.value[0]).toEqual({
+      id: '3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55',
+      name: 'Refunds Service',
+      repo_full_name: 'acme/refunds',
+      rule_count: 212,
+    });
+    // The platform sends null when it could not parse "owner/repo".
+    expect(parsed.value[1]?.repo_full_name).toBeNull();
+    expect(parsed.value[1]?.rule_count).toBe(0);
+  });
+
+  it('accepts an empty list — an org with no projects yet', () => {
+    const parsed = parseProjectListResponse([]);
+
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) throw new Error('expected the empty list to parse');
+    expect(parsed.value).toEqual([]);
+  });
+
+  it('ignores a field the platform added', () => {
+    const body = listFixture('projects-response.json');
+    body[0]!['created_at'] = '2026-08-11T00:00:00Z';
+
+    expect(parseProjectListResponse(body).ok).toBe(true);
+  });
+
+  it('reports drift when a field is renamed away', () => {
+    const body = listFixture('projects-response.json');
+    delete body[0]!['rule_count'];
+
+    const parsed = parseProjectListResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('0.rule_count');
+    expect(parsed.raw).toBe(body);
+  });
+
+  it('reports drift on a type change, rather than coercing it', () => {
+    const body = listFixture('projects-response.json');
+    body[1]!['rule_count'] = '41';
+
+    const parsed = parseProjectListResponse(body);
+
+    expect(parsed.ok).toBe(false);
+    if (parsed.ok) throw new Error('expected drift');
+    expect(parsed.issues.join('\n')).toContain('1.rule_count');
+  });
+
+  it('never throws on a body that is not a list at all', () => {
+    expect(parseProjectListResponse({ detail: 'Not Found' }).ok).toBe(false);
+    expect(parseProjectListResponse('<html>gateway</html>').ok).toBe(false);
+    expect(parseProjectListResponse(null).ok).toBe(false);
+  });
+});
+
+describe('requests', () => {
+  it('accepts the packet the producer builds', () => {
+    const parsed = DiffCheckRequestSchema.safeParse({
+      project: '3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55',
+      diff: 'diff --git a/a b/a\n',
+      base_ref: 'a'.repeat(40),
+      files: [{ path: 'a', content: 'x\n' }],
+      ref: 'feat/refunds',
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it('rejects a field the platform would 422 on (extra="forbid")', () => {
+    const parsed = DiffCheckRequestSchema.safeParse({
+      project: 'p',
+      diff: '',
+      base_ref: 'sha',
+      files: [],
+      repo: 'axtar/platform',
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('rejects a file entry carrying anything but path and content', () => {
+    const parsed = DiffCheckRequestSchema.safeParse({
+      project: 'p',
+      diff: '',
+      base_ref: 'sha',
+      files: [{ path: 'a', content: 'x', mode: '100644' }],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('accepts the packet the scan producer builds', () => {
+    const parsed = ScanCheckRequestSchema.safeParse({
+      project: '3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55',
+      files: [{ path: 'src/billing/invoice.ts', content: 'export const a = 1;\n' }],
+      paths_requested: ['src/billing/**'],
+    });
+
+    expect(parsed.success).toBe(true);
+  });
+
+  it('refuses a scan of no files (the platform declares min_length=1)', () => {
+    const parsed = ScanCheckRequestSchema.safeParse({
+      project: 'p',
+      files: [],
+      paths_requested: ['src/**'],
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('refuses the diff fields on a scan — there is no base to compare against', () => {
+    const parsed = ScanCheckRequestSchema.safeParse({
+      project: 'p',
+      files: [{ path: 'a', content: 'x\n' }],
+      paths_requested: [],
+      base_ref: 'sha',
+    });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it('requires a spec on the spec call', () => {
+    expect(SpecCheckRequestSchema.safeParse({ project: 'p', spec: '' }).success).toBe(false);
+    expect(SpecCheckRequestSchema.safeParse({ project: 'p', spec: '# plan' }).success).toBe(true);
+  });
+});
+
+describe('salvageReceipt', () => {
+  it('rescues the §10 block out of a body that did not parse', () => {
+    const body = { ...fixture('diff-response.json'), breaches: 'nope' };
+
+    expect(salvageReceipt(body)).toEqual({
+      check_id: '3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55',
+      url: 'https://app.axtar.dev/checks/3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55',
+      receipt: '212 considered · 209 checked · 3 dropped · 1 breaches · 1 advisories',
+    });
+  });
+
+  it('returns null when there is no receipt to rescue', () => {
+    expect(salvageReceipt({ detail: 'boom' })).toBeNull();
+  });
+});

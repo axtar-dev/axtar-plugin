@@ -1,182 +1,101 @@
 /**
- * Engine HTTP client. Fail-soft on every internal error: timeout, non-2xx,
- * Zod-invalid response, network error. Returns a discriminated result so
- * callers can decide between "engine spoke" and "engine didn't" without
- * exception handling on the hot path.
+ * The HTTP seam to the platform's `/mentor` sub-app.
  *
- * Per non-negotiable #4: never block Claude Code on an internal failure.
+ * Two methods, one per direction the plugin actually needs. A typed JSON POST
+ * carries the two checks (`/checks/diff`, `/checks/spec`, spec §9) — both the
+ * same shape: send a producer-built packet, parse a judgment. A typed JSON GET
+ * carries the one read (`/projects`), which `axtar_projects` lists so a
+ * developer can *author* the binding; the platform stores no selection, so
+ * there is nothing here that writes one. The response parser is passed in by
+ * the caller (a zod schema), which keeps the wire contract in one place:
+ * **zod is the single source of truth for the wire**, so a field the platform
+ * renamed fails here, loudly, instead of arriving as `undefined` three layers
+ * down.
+ *
+ * **Nothing throws.** The agent surface fails open (spec §12: "a hiccup must
+ * never block a developer mid-flow"), so every failure — timeout, non-2xx,
+ * unparseable body, DNS — comes back as a discriminated result the caller
+ * renders as text. `status` rides on the `http` variant because the meaningful
+ * ones are actionable: 401 is a bad key, 404 is a project id that does not
+ * belong to this key, 409 is an org with no usable LLM provider.
  */
 
-import {
-  BypassRequestSchema,
-  BypassResponseSchema,
-  ConsultRequestSchema,
-  ConsultResponseSchema,
-  EvaluateResponseSchema,
-  GateRequestSchema,
-  GateResponseSchema,
-  PolicyResponseSchema,
-  PreToolUseRequestSchema,
-  ProjectSummaryListSchema,
-  RuleSummaryListSchema,
-  SessionSummaryResponseSchema,
-  type BypassRequest,
-  type BypassResponse,
-  type ConsultRequest,
-  type ConsultResponse,
-  type EvaluateResponse,
-  type GateRequest,
-  type GateResponse,
-  type PolicyResponse,
-  type PreToolUseRequest,
-  type ProjectSummary,
-  type RuleSummary,
-  type SessionSummaryResponse,
-} from '../wire/schemas.js';
 import type { EngineConfig } from './config.js';
 
-export type EngineResult<T> =
-  | { ok: true; value: T }
-  | { ok: false; reason: 'timeout' | 'network' | 'http' | 'invalid_body'; detail: string };
+export type EngineFailure =
+  | { ok: false; reason: 'http'; status: number; detail: string }
+  | { ok: false; reason: 'timeout' | 'network' | 'invalid_body'; detail: string };
+
+export type EngineResult<T> = { ok: true; value: T } | EngineFailure;
+
+/** The minimum a response parser must do. Satisfied by any zod schema. */
+export interface ResponseParser<T> {
+  parse: (data: unknown) => T;
+}
 
 export interface EngineClient {
-  evaluate(req: PreToolUseRequest): Promise<EngineResult<EvaluateResponse>>;
   /**
-   * List the org's rules. When `projectId` is given, the platform scopes the
-   * listing to that project's rule pool (the hook passes the repo's selected
-   * project so only its rules — plus the org constitution, merged server-side
-   * — apply).
+   * POST `body` as JSON to `path` (relative to the `/mentor` base URL) and
+   * parse the response with `schema`.
    */
-  listRules(projectId?: string): Promise<EngineResult<RuleSummary[]>>;
-  /** List the org's projects so a developer can bind this repo to one. */
-  listProjects(): Promise<EngineResult<ProjectSummary[]>>;
+  post<T>(path: string, body: unknown, schema: ResponseParser<T>): Promise<EngineResult<T>>;
   /**
-   * Mentor gate — the cheap pre-check deciding whether an edit must pause for
-   * a consult. POSTs `/gate`.
+   * GET `path` (relative to the `/mentor` base URL) and parse the response with
+   * `schema`. Same failure discipline as `post` — it never throws.
    */
-  gate(req: GateRequest): Promise<EngineResult<GateResponse>>;
-  /** Mentor consult — the richer mentor exchange. POSTs `/consult`. */
-  consult(req: ConsultRequest): Promise<EngineResult<ConsultResponse>>;
-  /**
-   * Record a developer's explicit override of a gate that demanded a consult.
-   * POSTs `/bypass`; resolves to the persisted record's `{ id }`.
-   */
-  bypass(req: BypassRequest): Promise<EngineResult<BypassResponse>>;
-  /**
-   * Resolve the autonomy rung for this repo's org/project (D-063). The hook
-   * passes the repo's bound project so policy can scope per-project later;
-   * best-effort — callers treat any failure as Rung 1.
-   */
-  policy(projectId?: string): Promise<EngineResult<PolicyResponse>>;
-  /** Fetch the read-only session summary (D-064) — the PR's judgment-calls source. */
-  summary(sessionId: string): Promise<EngineResult<SessionSummaryResponse>>;
+  get<T>(path: string, schema: ResponseParser<T>): Promise<EngineResult<T>>;
 }
 
 export function createEngineClient(config: EngineConfig): EngineClient {
+  const authorization = `Bearer ${config.apiKey}`;
   return {
-    evaluate: (req) => post(config, '/evaluate', req, EvaluateResponseSchema),
-    listRules: (projectId) =>
-      get(
-        config,
-        projectId ? `/rules?project_id=${encodeURIComponent(projectId)}` : '/rules',
-        RuleSummaryListSchema,
-      ),
-    listProjects: () => get(config, '/projects', ProjectSummaryListSchema),
-    gate: (req) => postJson(config, '/gate', GateRequestSchema, req, GateResponseSchema),
-    consult: (req) =>
-      postJson(config, '/consult', ConsultRequestSchema, req, ConsultResponseSchema),
-    bypass: (req) => postJson(config, '/bypass', BypassRequestSchema, req, BypassResponseSchema),
-    policy: (projectId) =>
-      get(
-        config,
-        projectId ? `/policy?project_id=${encodeURIComponent(projectId)}` : '/policy',
-        PolicyResponseSchema,
-      ),
-    summary: (sessionId) =>
-      get(
-        config,
-        `/sessions/${encodeURIComponent(sessionId)}/summary`,
-        SessionSummaryResponseSchema,
-      ),
+    post: (path, body, schema) =>
+      request(config, path, schema, {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          authorization,
+        },
+        body: JSON.stringify(body),
+      }),
+    get: (path, schema) =>
+      request(config, path, schema, {
+        method: 'GET',
+        headers: { authorization },
+      }),
   };
 }
 
 /**
- * Generic JSON POST. Pre-validates the body against `reqSchema` (returning
- * `invalid_body` exactly like `post` does for `PreToolUseRequest`), then
- * parses the response with `resSchema`. Used by the mentor routes whose
- * bodies are not `PreToolUseRequest`.
+ * FastAPI answers an error with `{"detail": "..."}`; that string is written for
+ * the caller (which project, which provider to configure) and is worth far more
+ * than the status text. Fall back to the raw body, then to the status line.
  */
-async function postJson<Req, Res>(
-  config: EngineConfig,
-  path: string,
-  reqSchema: {
-    safeParse: (
-      data: unknown,
-    ) => { success: true; data: Req } | { success: false; error: { message: string } };
-  },
-  body: Req,
-  resSchema: { parse: (data: unknown) => Res },
-): Promise<EngineResult<Res>> {
-  const validated = reqSchema.safeParse(body);
-  if (!validated.success) {
-    return { ok: false, reason: 'invalid_body', detail: validated.error.message };
+async function failureDetail(res: Response): Promise<string> {
+  let raw = '';
+  try {
+    raw = (await res.text()).trim();
+  } catch {
+    raw = '';
   }
-  return request(config, path, resSchema, {
-    method: 'POST',
-    headers: authHeaders(config, { 'content-type': 'application/json' }),
-    body: JSON.stringify(validated.data),
-  });
-}
-
-async function post<T>(
-  config: EngineConfig,
-  path: string,
-  body: PreToolUseRequest,
-  schema: { parse: (data: unknown) => T },
-): Promise<EngineResult<T>> {
-  const validated = PreToolUseRequestSchema.safeParse(body);
-  if (!validated.success) {
-    return { ok: false, reason: 'invalid_body', detail: validated.error.message };
+  if (raw.length === 0) return `${res.status} ${res.statusText}`.trim();
+  try {
+    const parsed: unknown = JSON.parse(raw);
+    if (parsed !== null && typeof parsed === 'object' && 'detail' in parsed) {
+      const detail = (parsed as { detail: unknown }).detail;
+      if (typeof detail === 'string' && detail.trim().length > 0) return detail;
+      return JSON.stringify(detail);
+    }
+  } catch {
+    // Not JSON — the raw body is the best detail available.
   }
-  return request(config, path, schema, {
-    method: 'POST',
-    headers: authHeaders(config, { 'content-type': 'application/json' }),
-    body: JSON.stringify(validated.data),
-  });
-}
-
-async function get<T>(
-  config: EngineConfig,
-  path: string,
-  schema: { parse: (data: unknown) => T },
-): Promise<EngineResult<T>> {
-  return request(config, path, schema, {
-    method: 'GET',
-    headers: authHeaders(config),
-  });
-}
-
-/**
- * Attach `Authorization: Bearer <apiKey>` when the caller configured one.
- * Backward-compatible: when no key is set, no header is sent and the
- * legacy standalone engine (which never required auth) still accepts the
- * request. The embedded platform `/evaluate` requires the header.
- */
-function authHeaders(
-  config: EngineConfig,
-  extra: Record<string, string> = {},
-): Record<string, string> {
-  if (config.apiKey) {
-    return { ...extra, authorization: `Bearer ${config.apiKey}` };
-  }
-  return extra;
+  return raw.length > 500 ? `${raw.slice(0, 500)}…` : raw;
 }
 
 async function request<T>(
   config: EngineConfig,
   path: string,
-  schema: { parse: (data: unknown) => T },
+  schema: ResponseParser<T>,
   init: RequestInit,
 ): Promise<EngineResult<T>> {
   const ac = new AbortController();
@@ -184,11 +103,7 @@ async function request<T>(
   try {
     const res = await fetch(`${config.baseUrl}${path}`, { ...init, signal: ac.signal });
     if (!res.ok) {
-      return {
-        ok: false,
-        reason: 'http',
-        detail: `${res.status} ${res.statusText}`,
-      };
+      return { ok: false, reason: 'http', status: res.status, detail: await failureDetail(res) };
     }
     let raw: unknown;
     try {

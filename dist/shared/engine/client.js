@@ -1,69 +1,69 @@
 /**
- * Engine HTTP client. Fail-soft on every internal error: timeout, non-2xx,
- * Zod-invalid response, network error. Returns a discriminated result so
- * callers can decide between "engine spoke" and "engine didn't" without
- * exception handling on the hot path.
+ * The HTTP seam to the platform's `/mentor` sub-app.
  *
- * Per non-negotiable #4: never block Claude Code on an internal failure.
+ * Two methods, one per direction the plugin actually needs. A typed JSON POST
+ * carries the two checks (`/checks/diff`, `/checks/spec`, spec §9) — both the
+ * same shape: send a producer-built packet, parse a judgment. A typed JSON GET
+ * carries the one read (`/projects`), which `axtar_projects` lists so a
+ * developer can *author* the binding; the platform stores no selection, so
+ * there is nothing here that writes one. The response parser is passed in by
+ * the caller (a zod schema), which keeps the wire contract in one place:
+ * **zod is the single source of truth for the wire**, so a field the platform
+ * renamed fails here, loudly, instead of arriving as `undefined` three layers
+ * down.
+ *
+ * **Nothing throws.** The agent surface fails open (spec §12: "a hiccup must
+ * never block a developer mid-flow"), so every failure — timeout, non-2xx,
+ * unparseable body, DNS — comes back as a discriminated result the caller
+ * renders as text. `status` rides on the `http` variant because the meaningful
+ * ones are actionable: 401 is a bad key, 404 is a project id that does not
+ * belong to this key, 409 is an org with no usable LLM provider.
  */
-import { BypassRequestSchema, BypassResponseSchema, ConsultRequestSchema, ConsultResponseSchema, EvaluateResponseSchema, GateRequestSchema, GateResponseSchema, PolicyResponseSchema, PreToolUseRequestSchema, ProjectSummaryListSchema, RuleSummaryListSchema, SessionSummaryResponseSchema, } from '../wire/schemas.js';
 export function createEngineClient(config) {
+    const authorization = `Bearer ${config.apiKey}`;
     return {
-        evaluate: (req) => post(config, '/evaluate', req, EvaluateResponseSchema),
-        listRules: (projectId) => get(config, projectId ? `/rules?project_id=${encodeURIComponent(projectId)}` : '/rules', RuleSummaryListSchema),
-        listProjects: () => get(config, '/projects', ProjectSummaryListSchema),
-        gate: (req) => postJson(config, '/gate', GateRequestSchema, req, GateResponseSchema),
-        consult: (req) => postJson(config, '/consult', ConsultRequestSchema, req, ConsultResponseSchema),
-        bypass: (req) => postJson(config, '/bypass', BypassRequestSchema, req, BypassResponseSchema),
-        policy: (projectId) => get(config, projectId ? `/policy?project_id=${encodeURIComponent(projectId)}` : '/policy', PolicyResponseSchema),
-        summary: (sessionId) => get(config, `/sessions/${encodeURIComponent(sessionId)}/summary`, SessionSummaryResponseSchema),
+        post: (path, body, schema) => request(config, path, schema, {
+            method: 'POST',
+            headers: {
+                'content-type': 'application/json',
+                authorization,
+            },
+            body: JSON.stringify(body),
+        }),
+        get: (path, schema) => request(config, path, schema, {
+            method: 'GET',
+            headers: { authorization },
+        }),
     };
 }
 /**
- * Generic JSON POST. Pre-validates the body against `reqSchema` (returning
- * `invalid_body` exactly like `post` does for `PreToolUseRequest`), then
- * parses the response with `resSchema`. Used by the mentor routes whose
- * bodies are not `PreToolUseRequest`.
+ * FastAPI answers an error with `{"detail": "..."}`; that string is written for
+ * the caller (which project, which provider to configure) and is worth far more
+ * than the status text. Fall back to the raw body, then to the status line.
  */
-async function postJson(config, path, reqSchema, body, resSchema) {
-    const validated = reqSchema.safeParse(body);
-    if (!validated.success) {
-        return { ok: false, reason: 'invalid_body', detail: validated.error.message };
+async function failureDetail(res) {
+    let raw = '';
+    try {
+        raw = (await res.text()).trim();
     }
-    return request(config, path, resSchema, {
-        method: 'POST',
-        headers: authHeaders(config, { 'content-type': 'application/json' }),
-        body: JSON.stringify(validated.data),
-    });
-}
-async function post(config, path, body, schema) {
-    const validated = PreToolUseRequestSchema.safeParse(body);
-    if (!validated.success) {
-        return { ok: false, reason: 'invalid_body', detail: validated.error.message };
+    catch {
+        raw = '';
     }
-    return request(config, path, schema, {
-        method: 'POST',
-        headers: authHeaders(config, { 'content-type': 'application/json' }),
-        body: JSON.stringify(validated.data),
-    });
-}
-async function get(config, path, schema) {
-    return request(config, path, schema, {
-        method: 'GET',
-        headers: authHeaders(config),
-    });
-}
-/**
- * Attach `Authorization: Bearer <apiKey>` when the caller configured one.
- * Backward-compatible: when no key is set, no header is sent and the
- * legacy standalone engine (which never required auth) still accepts the
- * request. The embedded platform `/evaluate` requires the header.
- */
-function authHeaders(config, extra = {}) {
-    if (config.apiKey) {
-        return { ...extra, authorization: `Bearer ${config.apiKey}` };
+    if (raw.length === 0)
+        return `${res.status} ${res.statusText}`.trim();
+    try {
+        const parsed = JSON.parse(raw);
+        if (parsed !== null && typeof parsed === 'object' && 'detail' in parsed) {
+            const detail = parsed.detail;
+            if (typeof detail === 'string' && detail.trim().length > 0)
+                return detail;
+            return JSON.stringify(detail);
+        }
     }
-    return extra;
+    catch {
+        // Not JSON — the raw body is the best detail available.
+    }
+    return raw.length > 500 ? `${raw.slice(0, 500)}…` : raw;
 }
 async function request(config, path, schema, init) {
     const ac = new AbortController();
@@ -71,11 +71,7 @@ async function request(config, path, schema, init) {
     try {
         const res = await fetch(`${config.baseUrl}${path}`, { ...init, signal: ac.signal });
         if (!res.ok) {
-            return {
-                ok: false,
-                reason: 'http',
-                detail: `${res.status} ${res.statusText}`,
-            };
+            return { ok: false, reason: 'http', status: res.status, detail: await failureDetail(res) };
         }
         let raw;
         try {

@@ -1,6 +1,6 @@
 {
   "name": "axtar",
-  "description": "Axtar — the foundation layer that governs AI agent code edits against your organization's rules.",
+  "description": "Axtar — spec and diff checks against your team's rule corpus.",
   "owner": {
     "name": "Axtar"
   },
@@ -8,7 +8,7 @@
     {
       "name": "axtar",
       "source": "./",
-      "description": "Governs code edits in Claude Code via PreToolUse/PostToolUse hooks and a Mentor consult MCP server."
+      "description": "Checks a spec before the code exists and a diff when it's done, against the rules your team's Axtar project enforces — every check returns a receipt of what was considered."
     }
   ]
 }

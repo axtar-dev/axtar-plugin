@@ -1,85 +1,130 @@
 # CLAUDE.md — working in the Axtar plugin
 
-This repo is the **Axtar Claude Code plugin**: hooks + a Mentor consult MCP
-server that gate agent edits against org rules. Read `README.md` and
-`docs/architecture.md` before making changes.
+This repo is the **Axtar Claude Code plugin**: one stdio MCP server exposing
+four tools — `axtar_check_spec` (before the code exists), `axtar_check_diff`
+(when the change is done), `axtar_check_scan` (existing code, as it stands), and
+`axtar_projects` (which project governs this repo, and the config to write to
+change that) — against the rules the repo's Axtar project enforces. Read
+`README.md` first.
+
+The design authority is the redesign spec in the sibling platform repo:
+`docs/superpowers/specs/2026-08-11-axtar-redesign-design.md` — §9 (the calls),
+§10 (evidence/receipt), §12 (fail direction), §15 (this repo's role).
+The wire contract it implements is `api/app/schemas/plugin/check.py` there.
+
+**The hard reset landed.** The gating hooks, host adapters, the gate CLI and the
+Mentor consult server are deleted; what remains is the checks MCP server, the
+local packet producer, the wire schemas, the packaging bones — and **one advisory
+hook**, `src/hooks/check-reminder.ts` on the `Stop` event. It is not the old gate
+and must never grow into one: it evaluates nothing, calls the platform not at all,
+cannot deny a tool call, and says its one sentence at most once per unchecked
+working-tree state.
 
 ## Build & verify
 
 ```bash
 npm install
-npm run build       # tsc → dist/ (hooks and MCP server run compiled JS)
+npm run build       # tsc → dist/ (the MCP server runs compiled JS)
 npm test            # vitest — keep this green
 npm run typecheck   # tsc --noEmit
 npm run lint        # eslint src test
 npm run format:check
+npm run validate:manifests
 ```
 
-`dist/` is required at runtime — the hooks call `node ${CLAUDE_PLUGIN_ROOT}/dist/...`.
-**`dist/` is committed to the repo** and is exactly what the marketplace ships:
-Claude Code installs the plugin by checking out `main` HEAD and runs `npm install`
-with lifecycle scripts **disabled**, so `prepare`/`tsc` never runs on install — an
-uncommitted `dist/` would simply be absent at runtime (this is what broke installs
-through v0.3.5). Always rebuild and commit `dist/` after changing `src/`
-(`npm run build`); CI fails if the committed `dist/` drifts from `src/`, and the
-release `version` hook rebuilds it into the release commit.
+**`dist/` is committed** and is exactly what the marketplace ships: Claude Code
+installs the plugin by checking out `main` HEAD and runs `npm install` with
+lifecycle scripts **disabled**, so `prepare`/`tsc` never runs on install — an
+uncommitted `dist/` would simply be absent at runtime. Always rebuild and commit
+`dist/` after changing `src/`; CI fails if the committed `dist/` drifts.
+
+## Non-negotiable invariants
+
+1. **Never write to stdout.** In the MCP server it is the JSON-RPC channel; a
+   stray `console.log` corrupts the framing and the host drops the connection.
+   Every diagnostic goes through `src/shared/log.ts` → stderr. The one exception
+   is the hook entrypoint, whose stdout *is* its decision channel: it writes
+   exactly one JSON object (`{"decision":"block","reason":…}`), only when it
+   nudges, and nothing else ever.
+2. **The agent surface fails open** (spec §12). Timeout, 5xx, unparseable body,
+   DNS — every failure comes back as text the agent can read, never an exception
+   that stalls a developer mid-flow. The engine client returns a discriminated
+   result and never throws. (CI is the surface that fails closed.)
+3. **The MCP server builds the packet, the agent does not** (spec §15). The
+   agent passes no diff and no file contents: `axtar_check_diff` resolves
+   `base_ref`, runs `git diff`, and reads the changed files from the working
+   tree itself. Any change here must keep the local producer byte-symmetric with
+   the platform's CI producer.
+4. **zod is the single source of truth for the wire.** The old pinned
+   `contracts/wire/*.schema.json` are gone; request and response schemas live in
+   TypeScript and mirror `api/app/schemas/plugin/check.py`. The platform forbids
+   unknown request fields, so a skew fails loudly rather than arriving as an
+   unchecked file.
+5. **`.axtar/config.yml` is the only binding.** The plugin reads `project:` from
+   it and writes nothing. No local selection state, no chooser; unbound, the
+   check tools refuse with setup instructions rather than checking against
+   nothing. The rest of the file is the platform's to validate.
+   `axtar_projects` and `/axtar:projects` are the *authoring* path, not a
+   selector: the tool lists what exists and hands back the exact file to write,
+   and the command has the agent edit and commit it. Nothing in `src/` may ever
+   write that file, and the platform stores no per-repo choice to write to.
+   **Nothing in `src/` writes into the bound repo at all** — not the config, not
+   state, not a marker file. The turn-end reminder's memory lives in
+   `~/.axtar/state/<sha256 of the repo root path>.json`
+   (`src/shared/tree-state.ts`), and a developer's `git status` must never grow a
+   line because Axtar is installed.
+6. **The reminder is advisory and can never nag.** The `Stop` hook allows the
+   stop on every path but one, and the one that nudges records that it did, so a
+   second turn over the same tree state is silent. `stop_hook_active`,
+   `AXTAR_NO_REMINDER`, an unbound repo, a clean tree, an unreadable tree, a bad
+   payload: all allow. Adding a rung that can fire twice for one state, or one
+   that calls the platform, is the old gate coming back.
+7. **Named exports only.** Default exports are an eslint error.
+8. **`strict` TypeScript**, including `noUncheckedIndexedAccess` and
+   `exactOptionalPropertyTypes`. Omit absent optional fields rather than passing
+   `undefined` onto the wire.
+
+## Layout
+
+- `src/mcp/checks-server.ts` — the MCP server (the only runtime surface): the
+  four tools, their argument schemas, the refusals and the fail-open paths.
+- `src/hooks/check-reminder.ts` — the one hook (`Stop`, compiled to
+  `dist/hooks/check-reminder.js`): the allow ladder, the single nudge, and the
+  `{"decision":"block"}` line it prints. Reads stdin, writes nothing but state.
+- `src/shared/tree-state.ts` — the shared work-tree fingerprint (`git status`
+  + `git diff HEAD`, hashed) and the `~/.axtar/state/*.json` file behind it. The
+  hook and the server must never compute that hash differently, which is why
+  there is exactly one of them.
+- `src/shared/producer.ts` — the local packet producers: the diff packet
+  (base-ref ladder, `git diff`, changed + untracked files read whole) and the
+  scan packet (`git ls-files` glob expansion, tracked + untracked-not-ignored).
+  All git through `execFile`.
+- `src/shared/wire/checks.ts` — zod mirrors of the platform's
+  `api/app/schemas/plugin/check.py` and `project.py`; parsing is tolerant and
+  never throws.
+- `src/shared/render.ts` — what the agent reads: the §10 receipt block first,
+  then findings; drift, refusals and fail-open text live here too.
+- `src/shared/engine/` — connection config (`AXTAR_ENGINE_URL`, `AXTAR_API_KEY`)
+  + the typed JSON client (POST for the checks, GET for `/projects`).
+- `src/shared/project/config.ts` — finds `.axtar/config.yml`, reads `project:`.
+- `src/shared/log.ts` — stderr logger.
+- `test/fixtures/wire/` — pinned response bodies; they track the platform's
+  `check.py` and must be updated in the same change it is.
+- `commands/`, `.mcp.json`, `hooks/hooks.json`, `.claude-plugin/` — plugin wiring
+  (auto-discovered by Claude Code). `hooks/hooks.json` declares the one `Stop`
+  entry and points at `${CLAUDE_PLUGIN_ROOT}/dist/hooks/check-reminder.js`.
+- `scripts/` — version sync + manifest validation for releases.
 
 ## Releasing
 
 `package.json` is the single source of truth for the version; the `version` npm
-hook syncs it into `.claude-plugin/plugin.json` (never hand-edit that). Cut a
-release with one command — see **[`RELEASE.md`](RELEASE.md)** for the full
-procedure:
+hook syncs it into `.claude-plugin/plugin.json` (never hand-edit that). See
+**[`RELEASE.md`](RELEASE.md)**:
 
 ```bash
 npm run release:patch    # or release:minor / release:major
 ```
 
 That bumps + commits + tags `axtar--v<version>` + pushes; the pushed tag triggers
-`.github/workflows/release.yml` to publish the GitHub Release. Nothing releases on
-a normal commit. CI (`ci.yml`) runs build/test/lint/typecheck/format/validate on
-every push + PR.
-
-## Non-negotiable invariants
-
-1. **Fail soft on the hook path.** A hook must never throw in a way that blocks
-   a developer's edit when the engine is down. Every failure mode allows the
-   edit through and exits `0`. Entrypoints wrap `main()` in a `.catch()` that
-   exits `0`.
-2. **`src/shared/` is host-agnostic.** It must not `import` anything from
-   `src/hosts/`. Host behavior reaches the runner through the injected slots
-   (`parseInput`, `assemble`, `outputAdapter`) and the `consultLoopAvailable`
-   flag. Do not collapse this seam — it is what keeps the core portable.
-3. **Named exports only.** Default exports are an eslint error.
-4. **`strict` TypeScript**, including `noUncheckedIndexedAccess` and
-   `exactOptionalPropertyTypes`. Omit absent optional fields rather than passing
-   `undefined` onto the wire.
-5. **The wire contract is pinned.** `contracts/wire/*.schema.json` are validated
-   by `test/unit/contract.spec.ts` against the zod schemas in
-   `src/shared/wire/schemas.ts`. Change both together.
-6. **The consult server's trust model is deliberate.** `session_id` and
-   `files[]` are relayed verbatim to the engine — never validated, defaulted, or
-   pre-filtered client-side. The gate is the trust anchor.
-
-## Enforcement form
-
-The Claude Code adapter enforces via **exit code 2 + plain-text stderr**, not
-the `permissionDecision: "deny"` JSON form (which had enforcement gaps for the
-Edit tool, allow-listed tools, and MCP tools as of early 2026). Preserve this
-unless those upstream bugs are confirmed fixed. Rationale lives at the top of
-`src/hosts/claude-code/adapter.ts`.
-
-## Layout
-
-- `src/hosts/claude-code/` — Claude Code host (entrypoints, assemble, adapter).
-- `src/shared/` — host-agnostic core (runner, engine client, rules, edit sim, gate).
-- `src/mcp/consult-server.ts` — bundled `consult` / `session_summary` MCP tools.
-- `src/cli/projects.ts` — CLI backing `/axtar:*` commands.
-- `commands/`, `hooks/hooks.json`, `.mcp.json`, `.claude-plugin/` — plugin wiring
-  (auto-discovered by Claude Code).
-- `contracts/wire/` — pinned JSON Schemas.
-
-## Related branch
-
-The `other` branch holds the full dual-host archive (Claude Code **and** Codex).
-Codex-only code does not belong on `main`.
+`.github/workflows/release.yml`. Nothing releases on a normal commit. CI
+(`ci.yml`) runs build/test/lint/typecheck/format/validate on every push + PR.

@@ -1,0 +1,14 @@
+[
+  {
+    "id": "3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55",
+    "name": "Refunds Service",
+    "repo_full_name": "acme/refunds",
+    "rule_count": 212
+  },
+  {
+    "id": "9c4b7d21-3e88-4a10-b7f6-2c5e1a90d773",
+    "name": "Payments Platform",
+    "repo_full_name": null,
+    "rule_count": 0
+  }
+]

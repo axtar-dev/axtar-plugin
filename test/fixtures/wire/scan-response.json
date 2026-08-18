@@ -1,0 +1,46 @@
+{
+  "check_id": "5a1c8e07-4d62-4b39-8f21-0c7e3b9a6d44",
+  "url": "https://app.axtar.dev/checks/5a1c8e07-4d62-4b39-8f21-0c7e3b9a6d44",
+  "verdict": "breaches",
+  "breaches": [
+    {
+      "rule_id": "AXT-0011",
+      "rule_version": 2,
+      "severity": "must",
+      "path": "src/billing/invoice.ts",
+      "line": 117,
+      "evidence_quote": "const total = items.reduce(sum, 0);",
+      "why": "Money is summed as a float rather than in minor units.",
+      "fix": "Sum in integer minor units and format at the edge.",
+      "source": {
+        "kind": "stated",
+        "ref": "docs/money.md",
+        "excerpt": "Money is never a float."
+      },
+      "defended": true,
+      "cache_sourced": false
+    }
+  ],
+  "advisories": [
+    {
+      "rule_id": "AXT-0012",
+      "rule_version": 1,
+      "severity": "should",
+      "path": "src/billing/README.md",
+      "line": null,
+      "evidence_quote": null,
+      "why": "The module README predates the current invoice flow.",
+      "fix": null,
+      "source": null,
+      "defended": false,
+      "cache_sourced": true
+    }
+  ],
+  "considered": 212,
+  "checked": 210,
+  "dropped": [
+    { "rule_id": "AXT-0013", "reason": "packet_cap" },
+    { "rule_id": "AXT-0014", "reason": "timeout" }
+  ],
+  "receipt": "212 considered · 210 checked · 2 dropped · 1 breaches · 1 advisories"
+}

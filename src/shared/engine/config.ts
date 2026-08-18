@@ -1,98 +1,98 @@
 /**
- * Engine connection settings (D-022).
+ * How this machine reaches the Axtar platform.
  *
- * - `AXTAR_ENGINE_URL`     — defaults to `http://127.0.0.1:8765`.
- * - `AXTAR_HOOK_TIMEOUT_MS` — inner HTTP timeout in ms; default 10000 (10s).
- * - `AXTAR_API_KEY`         — optional. When set, the engine client sends
- *   `Authorization: Bearer <key>` on every request. Required to talk to
- *   the embedded platform `/evaluate` (which auths every request); the
- *   legacy standalone engine ignores the header so the same plugin binary
- *   works against both during migration.
+ * Two environment variables, both required — there is no local default and no
+ * silent fallback:
  *
- * The 10 s default accommodates LLM-bearing `/evaluate` calls on
- * PostToolUse (per D-035 Path D's ≤100 / 100–300-line tiers, plus
- * aggregation + network overhead). The original 600 ms default was sized
- * for the Semgrep-only PreToolUse path and was unrevisited when LLM rules
- * shipped on Post in Step 10 — the rehearsal-#1 retry surfaced that the
- * 600 ms ceiling fired before Sonnet's response arrived, so the engine
- * verdict never reached the agent. PreToolUse paths remain Semgrep-only
- * in Phase 4 and complete in well under one second, so the same value
- * applies cleanly to both hooks today.
+ * - `AXTAR_ENGINE_URL` — the platform's `/mentor` base URL, e.g.
+ *   `https://app.axtar.dev/mentor`. The check routes are appended to it
+ *   (`/checks/diff`, `/checks/spec`).
+ * - `AXTAR_API_KEY` — an `axtar_pk_…` token from the portal's Settings → API
+ *   keys. Sent as `Authorization: Bearer …`; every `/mentor` route authenticates
+ *   with it, and the key is what scopes a check to an organization.
  *
- * Operationally this is a **Post-shaped budget**: PreToolUse is also
- * bounded by Claude Code's `hooks.json` outer cap (`timeout: 2` seconds),
- * which fires before this inner 10 s timeout could ever bite — so
- * LLM-on-Pre in Phase 5+ requires revisiting `hooks.json` first, before
- * this knob matters for Pre. The outer cap is the catastrophic safety
- * net; this inner timeout is the per-request SLA. See D-035 ("Note on
- * the asymmetry mechanism") for the full reasoning.
+ * **A missing value is reported, never guessed.** An unset URL quietly pointing
+ * at localhost would turn "the platform is not configured" into a network error
+ * a developer has to decode, so `loadEngineConfig` returns which variables are
+ * missing and the caller refuses the tool call with setup instructions.
  *
- * ## Two-tier latency: the consult path is NOT the gate path
- *
- * `AXTAR_HOOK_TIMEOUT_MS` above is the *gate/evaluate* budget — fast by design
- * (D-035 fast tier). The Mentor **consultation** is the opposite: quality-first.
- * A single consult drives the mentor LLM (`mentor_llm_timeout_s = 45`) and, on
- * approve, a second adversarial-guard LLM call (another ~45 s). The 10 s hook
- * budget gives up long before that returns — three consult attempts timed out
- * >10 s in the live agent loop. So the consult server reads its OWN knob:
- *
- * - `AXTAR_CONSULT_TIMEOUT_MS` — consult HTTP timeout in ms; default 90000
- *   (90 s = mentor 45 s + guard 45 s, with headroom). Read ONLY by the bundled
- *   consult MCP server via {@link loadConsultConfig}; the gate/evaluate hooks
- *   stay on the 10 s budget above. This is the wire/config expression of the
- *   spec's two-tier design — see the Mentor spec's latency section.
+ * The one tunable knob is the request budget: checks are **synchronous** and the
+ * platform caps a check at 300 s of wall clock, returning partials with
+ * `dropped[]` populated rather than exceeding it (spec §15). The client budget
+ * therefore sits just above that cap — giving up earlier would throw away an
+ * answer the platform is about to send.
  */
 
 export interface EngineConfig {
+  /** The `/mentor` base URL, trailing slashes stripped. */
   baseUrl: string;
+  /** `axtar_pk_…` bearer token. */
+  apiKey: string;
+  /** Per-request timeout in ms. */
   timeoutMs: number;
-  /** Optional bearer token (e.g. `axtar_pk_…` from /settings/api-keys). */
-  apiKey?: string;
 }
 
-const DEFAULT_BASE_URL = 'http://127.0.0.1:8765';
-const DEFAULT_TIMEOUT_MS = 10000;
-// Consult is quality-first: mentor LLM (45s) + adversarial guard (45s) + headroom.
-const DEFAULT_CONSULT_TIMEOUT_MS = 90000;
+/** The env vars this module reads. Named so callers can print them verbatim. */
+export const ENGINE_URL_ENV = 'AXTAR_ENGINE_URL';
+export const API_KEY_ENV = 'AXTAR_API_KEY';
+export const TIMEOUT_ENV = 'AXTAR_CHECK_TIMEOUT_MS';
 
-function readPositiveIntEnv(name: string, fallback: number): number {
-  const raw = process.env[name]?.trim();
-  if (raw && raw.length > 0) {
-    const parsed = Number.parseInt(raw, 10);
-    if (Number.isFinite(parsed) && parsed > 0) {
-      return parsed;
-    }
-  }
-  return fallback;
+/** 300 s platform cap (spec §15) + headroom for the round trip. */
+export const DEFAULT_TIMEOUT_MS = 310_000;
+
+export type EngineConfigResult =
+  | { ok: true; config: EngineConfig }
+  | { ok: false; missing: string[] };
+
+type Env = Record<string, string | undefined>;
+
+function readString(env: Env, name: string): string | null {
+  const raw = env[name]?.trim();
+  return raw && raw.length > 0 ? raw : null;
 }
 
-export function loadEngineConfig(): EngineConfig {
-  const rawUrl = process.env.AXTAR_ENGINE_URL?.trim();
-  const baseUrl = rawUrl && rawUrl.length > 0 ? rawUrl : DEFAULT_BASE_URL;
-
-  const timeoutMs = readPositiveIntEnv('AXTAR_HOOK_TIMEOUT_MS', DEFAULT_TIMEOUT_MS);
-
-  const rawApiKey = process.env.AXTAR_API_KEY?.trim();
-  const cleanBaseUrl = baseUrl.replace(/\/+$/, '');
-
-  if (rawApiKey && rawApiKey.length > 0) {
-    return { baseUrl: cleanBaseUrl, timeoutMs, apiKey: rawApiKey };
-  }
-  return { baseUrl: cleanBaseUrl, timeoutMs };
+function readTimeoutMs(env: Env): number {
+  const raw = readString(env, TIMEOUT_ENV);
+  if (raw === null) return DEFAULT_TIMEOUT_MS;
+  const parsed = Number.parseInt(raw, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_TIMEOUT_MS;
 }
 
 /**
- * Engine config for the bundled consult MCP server. Identical to
- * {@link loadEngineConfig} (same baseUrl + apiKey) EXCEPT the timeout, which
- * comes from `AXTAR_CONSULT_TIMEOUT_MS` (default 90 s) instead of the 10 s
- * gate/hook budget. Mentor consultations are quality-first and routinely
- * outlast the hook budget; this keeps the two tiers explicit at the config
- * layer rather than letting the consult path inherit the gate's short SLA.
+ * Read the connection settings, or report which variables are missing.
+ *
+ * `env` is injectable so this stays a pure function under test; production
+ * callers pass nothing and get `process.env`.
  */
-export function loadConsultConfig(): EngineConfig {
-  const base = loadEngineConfig();
+export function loadEngineConfig(env: Env = process.env): EngineConfigResult {
+  const baseUrl = readString(env, ENGINE_URL_ENV);
+  const apiKey = readString(env, API_KEY_ENV);
+
+  const missing: string[] = [];
+  if (baseUrl === null) missing.push(ENGINE_URL_ENV);
+  if (apiKey === null) missing.push(API_KEY_ENV);
+  if (baseUrl === null || apiKey === null) {
+    return { ok: false, missing };
+  }
+
   return {
-    ...base,
-    timeoutMs: readPositiveIntEnv('AXTAR_CONSULT_TIMEOUT_MS', DEFAULT_CONSULT_TIMEOUT_MS),
+    ok: true,
+    config: {
+      baseUrl: baseUrl.replace(/\/+$/, ''),
+      apiKey,
+      timeoutMs: readTimeoutMs(env),
+    },
   };
+}
+
+/**
+ * What to tell the agent when the platform is not configured — the setup
+ * instructions the tools refuse with (spec §15).
+ */
+export function setupInstructions(missing: readonly string[]): string {
+  return (
+    `Axtar is not configured: ${missing.join(' and ')} ${missing.length > 1 ? 'are' : 'is'} not set. ` +
+    `Run /axtar:setup, or set ${ENGINE_URL_ENV} to your platform's /mentor base URL ` +
+    `and ${API_KEY_ENV} to an axtar_pk_… key from the portal's Settings → API keys.`
+  );
 }

@@ -1,0 +1,48 @@
+{
+  "check_id": "3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55",
+  "url": "https://app.axtar.dev/checks/3f6a2c18-9b1e-4c5a-9a2f-1d0e7b4c8a55",
+  "verdict": "breaches",
+  "breaches": [
+    {
+      "rule_id": "AXT-0001",
+      "rule_version": 1,
+      "severity": "must",
+      "path": "src/api/handler.ts",
+      "line": 42,
+      "evidence_quote": "throw new Error(\"x\");",
+      "why": "The refund is issued with no approval check.",
+      "fix": "Gate the refund on an approval.",
+      "source": {
+        "kind": "stated",
+        "ref": "docs/refunds.md",
+        "excerpt": "A refund over the threshold requires an approval."
+      },
+      "defended": true,
+      "cache_sourced": false
+    }
+  ],
+  "advisories": [
+    {
+      "rule_id": "AXT-0002",
+      "rule_version": 3,
+      "severity": "should",
+      "path": "docs/adr/0007.md",
+      "line": null,
+      "evidence_quote": null,
+      "why": "The ADR does not record the decision it changes.",
+      "fix": null,
+      "source": null,
+      "defended": false,
+      "cache_sourced": true
+    }
+  ],
+  "unmet_spec": [],
+  "considered": 212,
+  "checked": 209,
+  "dropped": [
+    { "rule_id": "AXT-0003", "reason": "packet_cap" },
+    { "rule_id": "AXT-0004", "reason": "timeout" },
+    { "rule_id": "AXT-0005", "reason": "provider_error" }
+  ],
+  "receipt": "212 considered · 209 checked · 3 dropped · 1 breaches · 1 advisories"
+}

@@ -1,26 +1,13 @@
 {
-  "description": "Axtar hooks — gate code edits via the engine /evaluate endpoint.",
+  "description": "Axtar — one advisory turn-end reminder. It never gates an edit: on Stop (the end of a whole turn) it checks whether the working tree changed without an Axtar check, and if so asks once for axtar_check_diff. Set AXTAR_NO_REMINDER to switch it off.",
   "hooks": {
-    "PreToolUse": [
+    "Stop": [
       {
-        "matcher": "Edit|Write|Bash|apply_patch|mcp__.*__(write|edit|create|delete|move).*",
         "hooks": [
           {
             "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hosts/claude-code/entrypoints/pre.js",
-            "timeout": 2
-          }
-        ]
-      }
-    ],
-    "PostToolUse": [
-      {
-        "matcher": "Edit|Write|Bash|apply_patch|mcp__.*__(write|edit|create|delete|move).*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hosts/claude-code/entrypoints/post.js",
-            "timeout": 5
+            "command": "node ${CLAUDE_PLUGIN_ROOT}/dist/hooks/check-reminder.js",
+            "timeout": 10
           }
         ]
       }
