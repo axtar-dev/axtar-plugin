@@ -1,6 +1,6 @@
 {
   "name": "axtar-plugin",
-  "version": "0.3.6",
+  "version": "0.4.0",
   "description": "Axtar plugin for Claude Code — an MCP server for spec and diff checks against your team's rule corpus.",
   "type": "module",
   "private": true,
