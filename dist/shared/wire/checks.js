@@ -200,6 +200,12 @@ export const SpecCheckResponseSchema = z.object({
  * portal issued, and rejecting a row over an id format would hide a project the
  * developer can plainly see in the portal. `repo_full_name` is `"owner/repo"`
  * when the platform could parse it at project creation, else null.
+ *
+ * `rule_count` is how many rules the project **enforces** — the rules of every
+ * ruleset attached to it and in force per its governance tier, i.e. exactly the
+ * universe a check runs against. It is NOT the project's extraction pool: an
+ * accepted-but-unassigned rule never runs, and counting it here is what once
+ * made an attached ruleset look invisible while unassigned rules looked live.
  */
 export const ProjectSummarySchema = z.object({
     id: z.string(),

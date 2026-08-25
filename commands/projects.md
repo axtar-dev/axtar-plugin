@@ -35,7 +35,7 @@ id, but do not guess an id.
 
 If the user passed `$ARGUMENTS`, treat it as the project they want and match it
 against the list by id or name. Otherwise present the list conversationally — a
-short numbered list of **name — rules in the pool — linked repo** — say which one
+short numbered list of **name — rules enforced — linked repo** — say which one
 governs the repo today (or that none does), and ask which project should govern
 it. Wait for the answer; do not pick for them.
 

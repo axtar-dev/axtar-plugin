@@ -671,7 +671,7 @@ describe('axtar_projects — listing is not selecting', () => {
     expect(fetched).toEqual(['/projects']);
     expect(body).toContain('PROJECTS (2)');
     expect(body).toContain('Refunds Service   ← this repo is bound to this project');
-    expect(body).toContain('212 in the pool');
+    expect(body).toContain('212 enforced');
     expect(body).toContain('acme/refunds');
     expect(body).toContain('Payments Platform');
     expect(body).toContain('(none linked)');
