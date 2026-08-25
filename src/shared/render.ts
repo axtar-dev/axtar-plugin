@@ -290,7 +290,7 @@ function projectBlock(index: number, project: ProjectSummary, bound: boolean): s
   return [
     `${index}. ${project.name}${bound ? '   ← this repo is bound to this project' : ''}`,
     `   id:     ${project.id}`,
-    `   rules:  ${project.rule_count} in the pool`,
+    `   rules:  ${project.rule_count} enforced`,
     `   repo:   ${project.repo_full_name ?? '(none linked)'}`,
   ].join('\n');
 }
